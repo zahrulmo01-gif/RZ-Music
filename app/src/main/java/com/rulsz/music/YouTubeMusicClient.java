@@ -20,6 +20,7 @@ public class YouTubeMusicClient {
     private static final String PREF_NAME = "convx_auth_prefs";
     private static final String KEY_COOKIE = "innertube_cookie";
     private static String savedCookie = "";
+    private static String visitorData = "";
 
     public static class StreamResult {
         public String url;
@@ -33,19 +34,28 @@ public class YouTubeMusicClient {
 
     public static class Song {
         public String videoId;
+        public String browseId; // jika item adalah playlist/album
         public String title;
-        public String artist;
+        public String subtitle;
         public String thumbnail;
+        public boolean isPlaylist;
 
-        public Song(String videoId, String title, String artist, String thumbnail) {
+        public Song(String videoId, String browseId, String title, String subtitle, String thumbnail, boolean isPlaylist) {
             this.videoId = videoId;
+            this.browseId = browseId;
             this.title = title;
-            this.artist = artist;
+            this.subtitle = subtitle;
             this.thumbnail = thumbnail;
+            this.isPlaylist = isPlaylist;
         }
     }
 
-    // Muat cookie tersimpan saat aplikasi dibuka
+    public static class HomeSection {
+        public String title;
+        public String strapline;
+        public List<Song> items = new ArrayList<>();
+    }
+
     public static void init(Context context) {
         SharedPreferences prefs = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE);
         savedCookie = prefs.getString(KEY_COOKIE, "");
@@ -61,7 +71,6 @@ public class YouTubeMusicClient {
         return !extractSapisid(savedCookie).isEmpty();
     }
 
-    // Parsing & Validasi token format ***INNERTUBE COOKIE*** seperti di Metrolist/ArchiveTune
     public static boolean saveToken(Context context, String rawInput) {
         if (rawInput == null || rawInput.trim().isEmpty()) {
             savedCookie = "";
@@ -77,10 +86,8 @@ public class YouTubeMusicClient {
                 cleaned = cleaned.substring(1).trim();
             }
         }
-        // Gabungkan baris baru jika user paste multi-line
         cleaned = cleaned.replace("\n", "").replace("\r", "").trim();
 
-        // Validasi wajib memiliki SAPISID atau __Secure-3PAPISID
         if (extractSapisid(cleaned).isEmpty()) {
             return false;
         }
@@ -107,7 +114,6 @@ public class YouTubeMusicClient {
         return fallback;
     }
 
-    // Generate Authorization: SAPISIDHASH <timestamp>_<sha1> untuk autentikasi YouTube Music
     private static String buildSapisidHashHeader(String origin) {
         String sapisid = extractSapisid(savedCookie);
         if (sapisid.isEmpty()) return null;
@@ -126,28 +132,207 @@ public class YouTubeMusicClient {
         }
     }
 
-    public static List<Song> searchSongs(String query) throws Exception {
-        String url = "https://music.youtube.com/youtubei/v1/search?prettyPrint=false";
+    private static Request.Builder buildWebRemixRequest(String endpoint, String payload) {
+        Request.Builder rb = new Request.Builder()
+                .url("https://music.youtube.com/youtubei/v1/" + endpoint + "?prettyPrint=false")
+                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36")
+                .header("Origin", "https://music.youtube.com")
+                .header("Referer", "https://music.youtube.com/")
+                .header("X-YouTube-Client-Name", "67")
+                .header("X-YouTube-Client-Version", "1.20241118.01.00")
+                .post(RequestBody.create(payload, JSON));
+
+        if (!visitorData.isEmpty()) {
+            rb.header("X-Goog-Visitor-Id", visitorData);
+        }
+        if (!savedCookie.isEmpty()) {
+            rb.header("Cookie", savedCookie);
+            String auth = buildSapisidHashHeader("https://music.youtube.com");
+            if (auth != null) {
+                rb.header("Authorization", auth);
+                rb.header("X-Goog-AuthUser", "0");
+            }
+        }
+        return rb;
+    }
+
+    // Ambil Section Beranda / Explore / Library langsung dari YouTube Music
+    public static List<HomeSection> getBrowseSections(String browseId) throws Exception {
         String payload = "{"
-                + "\"context\": {\"client\": {\"clientName\": \"WEB_REMIX\", \"clientVersion\": \"1.20241101.01.00\", \"hl\": \"id\", \"gl\": \"ID\"}},"
+                + "\"context\": {\"client\": {\"clientName\": \"WEB_REMIX\", \"clientVersion\": \"1.20241118.01.00\", \"hl\": \"id\", \"gl\": \"ID\"}},"
+                + "\"browseId\": \"" + browseId + "\""
+                + "}";
+
+        List<HomeSection> sections = new ArrayList<>();
+        try (Response response = client.newCall(buildWebRemixRequest("browse", payload).build()).execute()) {
+            if (!response.isSuccessful() || response.body() == null) return sections;
+            JSONObject root = new JSONObject(response.body().string());
+
+            if (root.has("responseContext")) {
+                String vd = root.getJSONObject("responseContext").optString("visitorData", "");
+                if (!vd.isEmpty()) visitorData = vd;
+            }
+
+            JSONObject contents = root.optJSONObject("contents");
+            if (contents == null) return sections;
+
+            JSONArray sectionList = null;
+            if (contents.has("singleColumnBrowseResultsRenderer")) {
+                JSONArray tabs = contents.getJSONObject("singleColumnBrowseResultsRenderer").getJSONArray("tabs");
+                JSONObject tabContent = tabs.getJSONObject(0).getJSONObject("tabRenderer").getJSONObject("content");
+                if (tabContent.has("sectionListRenderer")) {
+                    sectionList = tabContent.getJSONObject("sectionListRenderer").getJSONArray("contents");
+                }
+            } else if (contents.has("twoColumnBrowseResultsRenderer")) {
+                JSONObject secCol = contents.getJSONObject("twoColumnBrowseResultsRenderer")
+                        .getJSONObject("secondaryContents").getJSONObject("sectionListRenderer");
+                sectionList = secCol.getJSONArray("contents");
+            }
+
+            if (sectionList == null) return sections;
+
+            for (int i = 0; i < sectionList.length(); i++) {
+                JSONObject secObj = sectionList.getJSONObject(i);
+                if (secObj.has("musicCarouselShelfRenderer")) {
+                    JSONObject carousel = secObj.getJSONObject("musicCarouselShelfRenderer");
+                    HomeSection hs = new HomeSection();
+                    JSONObject header = carousel.optJSONObject("header");
+                    if (header != null && header.has("musicCarouselShelfBasicHeaderRenderer")) {
+                        JSONObject basicHeader = header.getJSONObject("musicCarouselShelfBasicHeaderRenderer");
+                        hs.title = extractRunsText(basicHeader.optJSONObject("title"));
+                        hs.strapline = extractRunsText(basicHeader.optJSONObject("strapline"));
+                    }
+                    if (hs.title == null || hs.title.isEmpty()) hs.title = "Rekomendasi";
+
+                    JSONArray items = carousel.optJSONArray("contents");
+                    if (items != null) {
+                        for (int j = 0; j < items.length(); j++) {
+                            Song parsed = parseMusicItem(items.getJSONObject(j));
+                            if (parsed != null) hs.items.add(parsed);
+                        }
+                    }
+                    if (!hs.items.isEmpty()) sections.add(hs);
+                } else if (secObj.has("musicShelfRenderer")) {
+                    JSONObject shelf = secObj.getJSONObject("musicShelfRenderer");
+                    HomeSection hs = new HomeSection();
+                    hs.title = extractRunsText(shelf.optJSONObject("title"));
+                    if (hs.title == null || hs.title.isEmpty()) hs.title = "Daftar Lagu";
+
+                    JSONArray items = shelf.optJSONArray("contents");
+                    if (items != null) {
+                        for (int j = 0; j < items.length(); j++) {
+                            Song parsed = parseMusicItem(items.getJSONObject(j));
+                            if (parsed != null) hs.items.add(parsed);
+                        }
+                    }
+                    if (!hs.items.isEmpty()) sections.add(hs);
+                } else if (secObj.has("gridRenderer")) {
+                    JSONObject grid = secObj.getJSONObject("gridRenderer");
+                    HomeSection hs = new HomeSection();
+                    hs.title = "Your Playlists";
+                    JSONArray items = grid.optJSONArray("items");
+                    if (items != null) {
+                        for (int j = 0; j < items.length(); j++) {
+                            Song parsed = parseMusicItem(items.getJSONObject(j));
+                            if (parsed != null) hs.items.add(parsed);
+                        }
+                    }
+                    if (!hs.items.isEmpty()) sections.add(hs);
+                }
+            }
+        }
+        return sections;
+    }
+
+    private static Song parseMusicItem(JSONObject wrapper) {
+        if (wrapper.has("musicTwoRowItemRenderer")) {
+            JSONObject item = wrapper.getJSONObject("musicTwoRowItemRenderer");
+            String title = extractRunsText(item.optJSONObject("title"));
+            String subtitle = extractRunsText(item.optJSONObject("subtitle"));
+            String thumb = extractThumbnail(item.optJSONObject("thumbnailRenderer"));
+
+            String videoId = "";
+            String browseId = "";
+            JSONObject nav = item.optJSONObject("navigationEndpoint");
+            if (nav != null) {
+                if (nav.has("watchEndpoint")) {
+                    videoId = nav.getJSONObject("watchEndpoint").optString("videoId", "");
+                } else if (nav.has("browseEndpoint")) {
+                    browseId = nav.getJSONObject("browseEndpoint").optString("browseId", "");
+                }
+            }
+            if (!videoId.isEmpty()) {
+                if (thumb.isEmpty()) thumb = "https://i.ytimg.com/vi/" + videoId + "/sddefault.jpg";
+                return new Song(videoId, "", title, subtitle, thumb, false);
+            } else if (!browseId.isEmpty()) {
+                return new Song("", browseId, title, subtitle, thumb, true);
+            }
+        } else if (wrapper.has("musicResponsiveListItemRenderer")) {
+            JSONObject item = wrapper.getJSONObject("musicResponsiveListItemRenderer");
+            String videoId = item.optJSONObject("playlistItemData") != null
+                    ? item.getJSONObject("playlistItemData").optString("videoId", "") : "";
+            String browseId = "";
+            JSONObject nav = item.optJSONObject("navigationEndpoint");
+            if (nav != null && nav.has("browseEndpoint")) {
+                browseId = nav.getJSONObject("browseEndpoint").optString("browseId", "");
+            }
+
+            JSONArray flexCols = item.optJSONArray("flexColumns");
+            String title = "";
+            String subtitle = "";
+            if (flexCols != null && flexCols.length() > 0) {
+                title = extractRunsText(flexCols.getJSONObject(0)
+                        .getJSONObject("musicResponsiveListItemFlexColumnRenderer").optJSONObject("text"));
+            }
+            if (flexCols != null && flexCols.length() > 1) {
+                subtitle = extractRunsText(flexCols.getJSONObject(1)
+                        .getJSONObject("musicResponsiveListItemFlexColumnRenderer").optJSONObject("text"));
+            }
+
+            String thumb = extractThumbnail(item.optJSONObject("thumbnail"));
+            if (!videoId.isEmpty()) {
+                if (thumb.isEmpty()) thumb = "https://i.ytimg.com/vi/" + videoId + "/sddefault.jpg";
+                return new Song(videoId, "", title, subtitle, thumb, false);
+            } else if (!browseId.isEmpty()) {
+                return new Song("", browseId, title, subtitle, thumb, true);
+            }
+        }
+        return null;
+    }
+
+    private static String extractRunsText(JSONObject textObj) {
+        if (textObj == null) return "";
+        JSONArray runs = textObj.optJSONArray("runs");
+        if (runs == null) return textObj.optString("simpleText", "");
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < runs.length(); i++) {
+            sb.append(runs.getJSONObject(i).optString("text", ""));
+        }
+        return sb.toString();
+    }
+
+    private static String extractThumbnail(JSONObject thumbContainer) {
+        if (thumbContainer == null) return "";
+        JSONObject mtr = thumbContainer.optJSONObject("musicThumbnailRenderer");
+        if (mtr == null) return "";
+        JSONObject thumbObj = mtr.optJSONObject("thumbnail");
+        if (thumbObj == null) return "";
+        JSONArray thumbs = thumbObj.optJSONArray("thumbnails");
+        if (thumbs != null && thumbs.length() > 0) {
+            return thumbs.getJSONObject(thumbs.length() - 1).optString("url", "");
+        }
+        return "";
+    }
+
+    public static List<Song> searchSongs(String query) throws Exception {
+        String payload = "{"
+                + "\"context\": {\"client\": {\"clientName\": \"WEB_REMIX\", \"clientVersion\": \"1.20241118.01.00\", \"hl\": \"id\", \"gl\": \"ID\"}},"
                 + "\"query\": " + JSONObject.quote(query) + ","
                 + "\"params\": \"EgWKAQIIAWoKEAMQBBAJEAoQBQ%3D%3D\""
                 + "}";
 
-        Request.Builder reqBuilder = new Request.Builder()
-                .url(url)
-                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
-                .header("Origin", "https://music.youtube.com")
-                .post(RequestBody.create(payload, JSON));
-
-        if (!savedCookie.isEmpty()) {
-            reqBuilder.header("Cookie", savedCookie);
-            String auth = buildSapisidHashHeader("https://music.youtube.com");
-            if (auth != null) reqBuilder.header("Authorization", auth);
-        }
-
         List<Song> results = new ArrayList<>();
-        try (Response response = client.newCall(reqBuilder.build()).execute()) {
+        try (Response response = client.newCall(buildWebRemixRequest("search", payload).build()).execute()) {
             if (!response.isSuccessful() || response.body() == null) return results;
             JSONObject root = new JSONObject(response.body().string());
 
@@ -166,32 +351,17 @@ public class YouTubeMusicClient {
                 JSONArray items = sec.getJSONObject("musicShelfRenderer").getJSONArray("contents");
 
                 for (int j = 0; j < items.length(); j++) {
-                    JSONObject item = items.getJSONObject(j).optJSONObject("musicResponsiveListItemRenderer");
-                    if (item == null) continue;
-
-                    String videoId = item.optJSONObject("playlistItemData") != null
-                            ? item.getJSONObject("playlistItemData").optString("videoId", "") : "";
-                    if (videoId.isEmpty()) continue;
-
-                    JSONArray flexCols = item.getJSONArray("flexColumns");
-                    String title = flexCols.getJSONObject(0)
-                            .getJSONObject("musicResponsiveListItemFlexColumnRenderer")
-                            .getJSONObject("text").getJSONArray("runs")
-                            .getJSONObject(0).getString("text");
-
-                    String artist = flexCols.getJSONObject(1)
-                            .getJSONObject("musicResponsiveListItemFlexColumnRenderer")
-                            .getJSONObject("text").getJSONArray("runs")
-                            .getJSONObject(0).getString("text");
-
-                    String thumb = "https://i.ytimg.com/vi/" + videoId + "/sddefault.jpg";
-                    results.add(new Song(videoId, title, artist, thumb));
+                    Song parsed = parseMusicItem(items.getJSONObject(j));
+                    if (parsed != null && !parsed.videoId.isEmpty()) {
+                        results.add(parsed);
+                    }
                 }
             }
         }
         return results;
     }
 
+    // Pengambilan Audio Stream Anti-Gagal (Tanpa mencampur cookie browser ke client mobile/VR + dukungan HLS)
     public static StreamResult getAudioStream(String videoId) {
         String[][] clients = {
                 {
@@ -209,11 +379,11 @@ public class YouTubeMusicClient {
                         "\"deviceMake\": \"Apple\", \"deviceModel\": \"iPhone16,2\", \"osName\": \"iPhone\", \"osVersion\": \"18.1.0.22B83\""
                 },
                 {
-                        "ANDROID_MUSIC",
-                        "21",
-                        "7.27.52",
-                        "com.google.android.apps.youtube.music/7.27.52 (Linux; U; Android 14; gzip)",
-                        "\"androidSdkVersion\": 34, \"osName\": \"Android\", \"osVersion\": \"14\""
+                        "ANDROID_TESTSUITE",
+                        "30",
+                        "1.9",
+                        "com.google.android.youtube/1.9 (Linux; U; Android 13; en_US)",
+                        "\"androidSdkVersion\": 33, \"osName\": \"Android\", \"osVersion\": \"13\""
                 }
         };
 
@@ -223,6 +393,12 @@ public class YouTubeMusicClient {
                 return new StreamResult(streamUrl, c[3]);
             }
         }
+
+        // Fallback terakhir ke Piped public API jika IP ISP memblokir /player langsung
+        String pipedUrl = fetchFromPipedFallback(videoId);
+        if (pipedUrl != null && !pipedUrl.isEmpty()) {
+            return new StreamResult(pipedUrl, "Mozilla/5.0 (Android 14; Mobile)");
+        }
         return null;
     }
 
@@ -230,14 +406,17 @@ public class YouTubeMusicClient {
             String videoId, String clientName, String clientId, String clientVersion, String userAgent, String extraJson) {
         try {
             String url = "https://www.youtube.com/youtubei/v1/player?prettyPrint=false";
+            String vdJson = visitorData.isEmpty() ? "" : "\"visitorData\": \"" + visitorData + "\", ";
             String payload = "{"
                     + "\"context\": {\"client\": {"
                     + "\"clientName\": \"" + clientName + "\", "
                     + "\"clientVersion\": \"" + clientVersion + "\", "
+                    + vdJson
                     + extraJson + ", "
                     + "\"hl\": \"id\", \"gl\": \"ID\""
                     + "}},"
                     + "\"videoId\": \"" + videoId + "\","
+                    + "\"playbackContext\": {\"contentPlaybackContext\": {\"html5Preference\": \"HTML5_PREF_WANTS\"}},"
                     + "\"contentCheckOk\": true,"
                     + "\"racyCheckOk\": true"
                     + "}";
@@ -250,10 +429,8 @@ public class YouTubeMusicClient {
                     .header("Origin", "https://www.youtube.com")
                     .post(RequestBody.create(payload, JSON));
 
-            if (!savedCookie.isEmpty()) {
-                reqBuilder.header("Cookie", savedCookie);
-                String auth = buildSapisidHashHeader("https://www.youtube.com");
-                if (auth != null) reqBuilder.header("Authorization", auth);
+            if (!visitorData.isEmpty()) {
+                reqBuilder.header("X-Goog-Visitor-Id", visitorData);
             }
 
             try (Response response = client.newCall(reqBuilder.build()).execute()) {
@@ -263,26 +440,55 @@ public class YouTubeMusicClient {
 
                 JSONObject streamingData = root.getJSONObject("streamingData");
                 JSONArray formats = streamingData.optJSONArray("adaptiveFormats");
-                if (formats == null) return null;
-
                 String bestAudioUrl = null;
                 int maxBitrate = 0;
 
-                for (int i = 0; i < formats.length(); i++) {
-                    JSONObject fmt = formats.getJSONObject(i);
-                    String mimeType = fmt.optString("mimeType", "");
-                    if (mimeType.startsWith("audio/") && fmt.has("url")) {
-                        int bitrate = fmt.optInt("bitrate", 0);
-                        if (bitrate > maxBitrate) {
-                            maxBitrate = bitrate;
-                            bestAudioUrl = fmt.getString("url");
+                if (formats != null) {
+                    for (int i = 0; i < formats.length(); i++) {
+                        JSONObject fmt = formats.getJSONObject(i);
+                        String mimeType = fmt.optString("mimeType", "");
+                        if (mimeType.startsWith("audio/") && fmt.has("url")) {
+                            int bitrate = fmt.optInt("bitrate", 0);
+                            if (bitrate > maxBitrate) {
+                                maxBitrate = bitrate;
+                                bestAudioUrl = fmt.getString("url");
+                            }
                         }
                     }
                 }
-                return bestAudioUrl;
+                if (bestAudioUrl != null) return bestAudioUrl;
+
+                // Fallback ke HLS Manifest (khusus client IOS) jika adaptiveFormats terenkripsi
+                String hls = streamingData.optString("hlsManifestUrl", "");
+                if (!hls.isEmpty()) return hls;
             }
         } catch (Exception ignored) {
-            return null;
         }
+        return null;
+    }
+
+    private static String fetchFromPipedFallback(String videoId) {
+        String[] instances = {
+                "https://pipedapi.kavin.rocks/streams/",
+                "https://pipedapi.adminforge.de/streams/"
+        };
+        for (String base : instances) {
+            try {
+                Request req = new Request.Builder()
+                        .url(base + videoId)
+                        .header("User-Agent", "Mozilla/5.0")
+                        .build();
+                try (Response res = client.newCall(req).execute()) {
+                    if (!res.isSuccessful() || res.body() == null) continue;
+                    JSONObject obj = new JSONObject(res.body().string());
+                    JSONArray audioStreams = obj.optJSONArray("audioStreams");
+                    if (audioStreams != null && audioStreams.length() > 0) {
+                        return audioStreams.getJSONObject(0).optString("url", "");
+                    }
+                }
+            } catch (Exception ignored) {
+            }
+        }
+        return null;
     }
 }

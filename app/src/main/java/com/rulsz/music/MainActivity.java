@@ -2,7 +2,6 @@ package com.rulsz.music;
 
 import android.animation.ValueAnimator;
 import android.app.AlertDialog;
-import android.content.ComponentName;
 import android.content.res.ColorStateList;
 import android.graphics.Bitmap;
 import android.graphics.Color;
@@ -11,7 +10,6 @@ import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
-import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -39,12 +37,6 @@ import android.widget.Toast;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
-import androidx.media3.common.MediaItem;
-import androidx.media3.common.MediaMetadata;
-import androidx.media3.common.PlaybackException;
-import androidx.media3.common.Player;
-import androidx.media3.session.MediaController;
-import androidx.media3.session.SessionToken;
 import androidx.palette.graphics.Palette;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
@@ -52,8 +44,6 @@ import androidx.recyclerview.widget.RecyclerView;
 import com.bumptech.glide.Glide;
 import com.bumptech.glide.request.target.CustomTarget;
 import com.bumptech.glide.request.transition.Transition;
-import com.google.common.util.concurrent.ListenableFuture;
-import com.google.common.util.concurrent.MoreExecutors;
 
 import java.util.ArrayList;
 import java.util.Calendar;
@@ -63,7 +53,6 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 public class MainActivity extends AppCompatActivity {
-    private MediaController mediaController;
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final Handler uiHandler = new Handler(Looper.getMainLooper());
 
@@ -72,6 +61,7 @@ public class MainActivity extends AppCompatActivity {
     private SongListAdapter searchAdapter;
     private int currentIndex = -1;
     private int currentAccentColor = Color.parseColor("#18181B");
+    private boolean isPlayingState = false;
 
     private FrameLayout rootFrame;
     private View ambientBackdrop;
@@ -101,9 +91,11 @@ public class MainActivity extends AppCompatActivity {
     private ImageView compactCover, compactPlayBtn;
     private TextView compactTitle;
 
-    // Full Screen Now Playing Views
+    // Full Screen Now Playing Views & Official YouTube IFrame Player
     private LinearLayout fullPlayerSheet;
+    private FrameLayout artWrapper;
     private ImageView fullCover, fullPlayBtn;
+    private YouTubeIFramePlayerView ytPlayerView;
     private TextView fullTitle, fullArtist, currentTimeText, totalTimeText;
     private SeekBar seekBar;
     private boolean isSeeking = false;
@@ -180,14 +172,14 @@ public class MainActivity extends AppCompatActivity {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
         fullPlayerSheet = buildFullPlayerSheet();
-        fullPlayerSheet.setVisibility(View.GONE);
+        // Gunakan alpha=0 & translationY di luar layar (bukan View.GONE) agar WebView IFrame selalu aktif
+        fullPlayerSheet.setVisibility(View.VISIBLE);
+        fullPlayerSheet.post(() -> fullPlayerSheet.setTranslationY(rootFrame.getHeight() + dp(100)));
         rootFrame.addView(fullPlayerSheet, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
         setContentView(rootFrame);
         refreshAccountState();
-        initMediaController();
-        startProgressUpdater();
 
         if (YouTubeMusicClient.isLoggedIn()) {
             executor.execute(() -> {
@@ -778,7 +770,7 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
-    // Dock Bawah Mode Normal (Mini Player + Kapsul LiquidGlass 3-Tab + Lingkaran Search Terpisah persis Sonara)
+    // Dock Bawah Mode Normal (Mini Player + Kapsul LiquidGlass 3-Tab + Lingkaran Search Terpisah)
     private LinearLayout buildExpandedDock() {
         LinearLayout dock = new LinearLayout(this);
         dock.setOrientation(LinearLayout.VERTICAL);
@@ -838,7 +830,6 @@ public class MainActivity extends AppCompatActivity {
         miniLp.setMargins(0, 0, 0, dp(10));
         dock.addView(miniPlayerCard, miniLp);
 
-        // Baris Bawah: Kapsul LiquidGlass 3-Tab (Kiri) + Lingkaran Search Terpisah (Kanan)
         LinearLayout navRow = new LinearLayout(this);
         navRow.setOrientation(LinearLayout.HORIZONTAL);
         navRow.setGravity(Gravity.CENTER_VERTICAL);
@@ -1224,12 +1215,44 @@ public class MainActivity extends AppCompatActivity {
         sheet.addView(topBar, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        FrameLayout artWrapper = new FrameLayout(this);
+        // Bingkai Artwork + Official YouTube IFrame Player
+        artWrapper = new FrameLayout(this);
         artWrapper.setElevation(dp(24));
+        roundView(artWrapper, dp(24));
+
+        ytPlayerView = new YouTubeIFramePlayerView(this);
+        ytPlayerView.setPlayerCallback(new YouTubeIFramePlayerView.PlayerCallback() {
+            @Override
+            public void onStateChanged(boolean isPlaying) {
+                isPlayingState = isPlaying;
+                int iconRes = isPlaying ? R.drawable.ic_pause : R.drawable.ic_play;
+                miniPlayBtn.setImageResource(iconRes);
+                compactPlayBtn.setImageResource(iconRes);
+                fullPlayBtn.setImageResource(iconRes);
+                fullCover.setVisibility(isPlaying ? View.GONE : View.VISIBLE);
+            }
+
+            @Override
+            public void onProgress(long currentMs, long durationMs) {
+                if (!isSeeking && durationMs > 0) {
+                    seekBar.setMax((int) durationMs);
+                    seekBar.setProgress((int) currentMs);
+                    currentTimeText.setText(formatTime(currentMs));
+                    totalTimeText.setText(formatTime(durationMs));
+                }
+            }
+
+            @Override
+            public void onEnded() {
+                playNext();
+            }
+        });
+        artWrapper.addView(ytPlayerView, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
         fullCover = new ImageView(this);
         fullCover.setScaleType(ImageView.ScaleType.CENTER_CROP);
         fullCover.setBackgroundColor(Color.parseColor("#1E2430"));
-        roundView(fullCover, dp(24));
         artWrapper.addView(fullCover, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
@@ -1272,7 +1295,7 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public void onStopTrackingTouch(SeekBar sb) {
                 isSeeking = false;
-                if (mediaController != null) mediaController.seekTo(sb.getProgress());
+                if (ytPlayerView != null) ytPlayerView.seekToMs(sb.getProgress());
             }
         });
         sheet.addView(seekBar, new LinearLayout.LayoutParams(
@@ -1344,11 +1367,12 @@ public class MainActivity extends AppCompatActivity {
         currentIndex = index;
         YouTubeMusicClient.Song song = activeQueue.get(index);
 
-        miniTitle.setText("Memuat: " + song.title);
+        miniTitle.setText(song.title);
         miniArtist.setText(song.subtitle);
         compactTitle.setText(song.title);
         fullTitle.setText(song.title);
         fullArtist.setText(song.subtitle);
+        fullCover.setVisibility(View.VISIBLE);
 
         Glide.with(this).asBitmap().load(song.thumbnail).into(new CustomTarget<Bitmap>() {
             @Override
@@ -1369,48 +1393,15 @@ public class MainActivity extends AppCompatActivity {
             public void onLoadCleared(@Nullable Drawable placeholder) {}
         });
 
-        executor.execute(() -> {
-            YouTubeMusicClient.StreamResult stream = YouTubeMusicClient.getAudioStream(song.videoId);
-            if (stream == null || stream.url == null) {
-                String err = (stream != null && stream.errorDetail != null) ? stream.errorDetail : "Stream tidak tersedia";
-                uiHandler.post(() -> {
-                    miniTitle.setText("Gagal: " + song.title);
-                    Toast.makeText(this, err, Toast.LENGTH_LONG).show();
-                });
-                return;
-            }
-            String streamUrl = stream.url;
-
-            uiHandler.post(() -> {
-                if (mediaController == null) {
-                    Toast.makeText(this, "MediaController belum siap", Toast.LENGTH_SHORT).show();
-                    return;
-                }
-                MediaMetadata metadata = new MediaMetadata.Builder()
-                        .setTitle(song.title)
-                        .setArtist(song.subtitle)
-                        .setArtworkUri(Uri.parse(song.thumbnail))
-                        .build();
-
-                MediaItem item = new MediaItem.Builder()
-                        .setUri(streamUrl)
-                        .setMediaMetadata(metadata)
-                        .build();
-
-                mediaController.stop();
-                mediaController.clearMediaItems();
-                mediaController.setMediaItem(item);
-                mediaController.prepare();
-                mediaController.play();
-                miniTitle.setText(song.title);
-            });
-        });
+        if (ytPlayerView != null) {
+            ytPlayerView.loadVideo(song.videoId);
+        }
     }
 
     private void togglePlayPause() {
-        if (mediaController == null) return;
-        if (mediaController.isPlaying()) mediaController.pause();
-        else mediaController.play();
+        if (ytPlayerView == null) return;
+        if (isPlayingState) ytPlayerView.pauseVideo();
+        else ytPlayerView.playVideo();
     }
 
     private void playNext() {
@@ -1426,11 +1417,13 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    private boolean isFullPlayerOpen() {
+        return fullPlayerSheet.getTranslationY() < 50f;
+    }
+
     private void openFullPlayer() {
-        fullPlayerSheet.setVisibility(View.VISIBLE);
-        fullPlayerSheet.setTranslationY(rootFrame.getHeight());
         fullPlayerSheet.animate()
-                .translationY(0)
+                .translationY(0f)
                 .setDuration(380)
                 .setInterpolator(new OvershootInterpolator(0.8f))
                 .start();
@@ -1438,62 +1431,9 @@ public class MainActivity extends AppCompatActivity {
 
     private void closeFullPlayer() {
         fullPlayerSheet.animate()
-                .translationY(rootFrame.getHeight())
+                .translationY(rootFrame.getHeight() + dp(100))
                 .setDuration(280)
-                .withEndAction(() -> fullPlayerSheet.setVisibility(View.GONE))
                 .start();
-    }
-
-    private void initMediaController() {
-        SessionToken token = new SessionToken(this, new ComponentName(this, PlaybackService.class));
-        ListenableFuture<MediaController> future = new MediaController.Builder(this, token).buildAsync();
-        future.addListener(() -> {
-            try {
-                mediaController = future.get();
-                mediaController.addListener(new Player.Listener() {
-                    @Override
-                    public void onIsPlayingChanged(boolean isPlaying) {
-                        int iconRes = isPlaying ? R.drawable.ic_pause : R.drawable.ic_play;
-                        miniPlayBtn.setImageResource(iconRes);
-                        compactPlayBtn.setImageResource(iconRes);
-                        fullPlayBtn.setImageResource(iconRes);
-                    }
-
-                    @Override
-                    public void onPlaybackStateChanged(int state) {
-                        if (state == Player.STATE_ENDED) playNext();
-                    }
-
-                    @Override
-                    public void onPlayerError(@NonNull PlaybackException error) {
-                        String msg = "Player Error (" + error.getErrorCodeName() + "): " + error.getMessage();
-                        miniTitle.setText("Error pemutaran");
-                        Toast.makeText(MainActivity.this, msg, Toast.LENGTH_LONG).show();
-                    }
-                });
-            } catch (Exception e) {
-                Toast.makeText(this, "Init Player Gagal: " + e.getMessage(), Toast.LENGTH_LONG).show();
-            }
-        }, MoreExecutors.directExecutor());
-    }
-
-    private void startProgressUpdater() {
-        uiHandler.postDelayed(new Runnable() {
-            @Override
-            public void run() {
-                if (mediaController != null && !isSeeking) {
-                    long duration = mediaController.getDuration();
-                    long pos = mediaController.getCurrentPosition();
-                    if (duration > 0) {
-                        seekBar.setMax((int) duration);
-                        seekBar.setProgress((int) pos);
-                        currentTimeText.setText(formatTime(pos));
-                        totalTimeText.setText(formatTime(duration));
-                    }
-                }
-                uiHandler.postDelayed(this, 500);
-            }
-        }, 500);
     }
 
     private void updateAmbientColors(int topColor) {
@@ -1562,7 +1502,7 @@ public class MainActivity extends AppCompatActivity {
 
     @Override
     public void onBackPressed() {
-        if (fullPlayerSheet.getVisibility() == View.VISIBLE) {
+        if (isFullPlayerOpen()) {
             closeFullPlayer();
         } else if (settingsSheet.getVisibility() == View.VISIBLE) {
             closeSettings();
@@ -1573,6 +1513,14 @@ public class MainActivity extends AppCompatActivity {
         } else {
             super.onBackPressed();
         }
+    }
+
+    @Override
+    protected void onDestroy() {
+        if (ytPlayerView != null) {
+            ytPlayerView.destroy();
+        }
+        super.onDestroy();
     }
 
     private class SongListAdapter extends RecyclerView.Adapter<SongListAdapter.ViewHolder> {

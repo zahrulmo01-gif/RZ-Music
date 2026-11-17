@@ -12,7 +12,8 @@ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory;
 import androidx.media3.session.MediaSession;
 import androidx.media3.session.MediaSessionService;
 
-import java.util.Collections;
+import java.util.HashMap;
+import java.util.Map;
 
 public class PlaybackService extends MediaSessionService {
     private MediaSession mediaSession;
@@ -31,18 +32,22 @@ public class PlaybackService extends MediaSessionService {
                 .setConnectTimeoutMs(15000)
                 .setReadTimeoutMs(15000);
 
-        // ResolvingDataSource menyuntikkan User-Agent yang 100% cocok dengan client pembuat URL stream
         DataSource.Factory resolvingFactory = new ResolvingDataSource.Factory(
                 httpFactory,
                 dataSpec -> {
                     String uriStr = dataSpec.uri.toString();
                     String matchedUa = YouTubeMusicClient.streamUserAgentMap.get(uriStr);
+                    Map<String, String> headers = new HashMap<>();
                     if (matchedUa != null && !matchedUa.isEmpty()) {
-                        return dataSpec.buildUpon()
-                                .setHttpRequestHeaders(Collections.singletonMap("User-Agent", matchedUa))
-                                .build();
+                        headers.put("User-Agent", matchedUa);
+                    } else {
+                        headers.put("User-Agent", "com.google.android.apps.youtube.vr.oculus/1.61.48 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip");
                     }
-                    return dataSpec;
+                    headers.put("Origin", "https://www.youtube.com");
+                    headers.put("Referer", "https://www.youtube.com/");
+                    return dataSpec.buildUpon()
+                            .setHttpRequestHeaders(headers)
+                            .build();
                 }
         );
 

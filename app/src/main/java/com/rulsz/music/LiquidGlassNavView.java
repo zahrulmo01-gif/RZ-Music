@@ -9,8 +9,8 @@ import android.graphics.LinearGradient;
 import android.graphics.Paint;
 import android.graphics.RadialGradient;
 import android.graphics.RectF;
-import android.graphics.Typeface;
 import android.graphics.Shader;
+import android.graphics.Typeface;
 import android.view.Gravity;
 import android.view.HapticFeedbackConstants;
 import android.view.MotionEvent;
@@ -45,6 +45,7 @@ public class LiquidGlassNavView extends FrameLayout {
     private float lensScaleX = 1.0f;
     private float lensScaleY = 1.0f;
     private boolean isDragging = false;
+    private boolean hasMoved = false;
     private float touchDownX = 0f;
     private float dragStartCenterX = 0f;
 
@@ -152,25 +153,28 @@ public class LiquidGlassNavView extends FrameLayout {
             case MotionEvent.ACTION_DOWN:
                 if (snapAnimator != null) snapAnimator.cancel();
                 isDragging = true;
+                hasMoved = false;
                 touchDownX = event.getX();
                 dragStartCenterX = lensCenterX;
-                animateDropletMorph(1.15f, 1.12f);
-                performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
+                animateDropletMorph(1.14f, 1.10f);
                 return true;
 
             case MotionEvent.ACTION_MOVE:
                 float deltaX = event.getX() - touchDownX;
-                float rawCenter = Math.abs(deltaX) > dp(4)
-                        ? (dragStartCenterX + deltaX)
-                        : event.getX();
-                lensCenterX = Math.max(minCenter, Math.min(maxCenter, rawCenter));
-                applyLensTransform();
-                updateMagneticIcons();
+                if (Math.abs(deltaX) > dp(8)) {
+                    hasMoved = true;
+                }
+                if (hasMoved) {
+                    float rawCenter = dragStartCenterX + deltaX;
+                    lensCenterX = Math.max(minCenter, Math.min(maxCenter, rawCenter));
+                    applyLensTransform();
+                    updateMagneticIcons();
 
-                int hoveredIndex = getNearestTabIndex(lensCenterX);
-                if (hoveredIndex != lastHapticIndex) {
-                    lastHapticIndex = hoveredIndex;
-                    performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
+                    int hoveredIndex = getNearestTabIndex(lensCenterX);
+                    if (hoveredIndex != lastHapticIndex) {
+                        lastHapticIndex = hoveredIndex;
+                        performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
+                    }
                 }
                 return true;
 
@@ -178,17 +182,21 @@ public class LiquidGlassNavView extends FrameLayout {
             case MotionEvent.ACTION_CANCEL:
                 isDragging = false;
                 animateDropletMorph(1.0f, 1.0f);
-                int targetIndex = getNearestTabIndex(lensCenterX);
+                // Jika user hanya tap (tidak menggeser), pilih tab berdasarkan posisi jari (event.getX())!
+                int targetIndex = hasMoved
+                        ? getNearestTabIndex(lensCenterX)
+                        : getNearestTabIndex(event.getX());
+                performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
                 selectTab(targetIndex, true);
                 return true;
         }
         return super.onTouchEvent(event);
     }
 
-    private int getNearestTabIndex(float centerX) {
+    private int getNearestTabIndex(float xPos) {
         float innerW = getWidth() - dp(12);
         float slotW = innerW / tabSlots.size();
-        int idx = (int) ((centerX - dp(6)) / slotW);
+        int idx = (int) ((xPos - dp(6)) / slotW);
         return Math.max(0, Math.min(tabSlots.size() - 1, idx));
     }
 
@@ -202,7 +210,7 @@ public class LiquidGlassNavView extends FrameLayout {
         float targetCenter = getSlotCenterX(index);
         if (snapAnimator != null) snapAnimator.cancel();
         snapAnimator = ValueAnimator.ofFloat(lensCenterX, targetCenter);
-        snapAnimator.setDuration(320);
+        snapAnimator.setDuration(300);
         snapAnimator.setInterpolator(new OvershootInterpolator(1.25f));
         snapAnimator.addUpdateListener(anim -> {
             lensCenterX = (float) anim.getAnimatedValue();
@@ -303,7 +311,6 @@ public class LiquidGlassNavView extends FrameLayout {
         }
     }
 
-    // Lensa Kristal Liquid Glass (Putih-Translucent + Refraksi Cahaya Tepi)
     private class LiquidDropletLens extends View {
         private final Paint bodyPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint glowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);

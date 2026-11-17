@@ -2,17 +2,30 @@ package com.rulsz.music;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+
 import org.json.JSONArray;
 import org.json.JSONObject;
+import org.schabi.newpipe.extractor.NewPipe;
+import org.schabi.newpipe.extractor.ServiceList;
+import org.schabi.newpipe.extractor.downloader.Downloader;
+import org.schabi.newpipe.extractor.downloader.Request;
+import org.schabi.newpipe.extractor.downloader.Response;
+import org.schabi.newpipe.extractor.exceptions.ReCaptchaException;
+import org.schabi.newpipe.extractor.localization.Localization;
+import org.schabi.newpipe.extractor.stream.AudioStream;
+import org.schabi.newpipe.extractor.stream.StreamInfo;
+
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
+
 import okhttp3.MediaType;
 import okhttp3.OkHttpClient;
-import okhttp3.Request;
 import okhttp3.RequestBody;
-import okhttp3.Response;
 
 public class YouTubeMusicClient {
     private static final OkHttpClient client = new OkHttpClient();
@@ -21,14 +34,15 @@ public class YouTubeMusicClient {
     private static final String KEY_COOKIE = "innertube_cookie";
     private static String savedCookie = "";
     private static String visitorData = "";
+    private static boolean newPipeInitialized = false;
 
     public static class StreamResult {
         public String url;
-        public String userAgent;
+        public String errorDetail;
 
-        public StreamResult(String url, String userAgent) {
+        public StreamResult(String url, String errorDetail) {
             this.url = url;
-            this.userAgent = userAgent;
+            this.errorDetail = errorDetail;
         }
     }
 
@@ -56,9 +70,59 @@ public class YouTubeMusicClient {
         public List<Song> items = new ArrayList<>();
     }
 
+    // Downloader OkHttp untuk NewPipeExtractor (Arsitektur Metrolist/ArchiveTune)
+    private static class OkHttpNewPipeDownloader extends Downloader {
+        @Override
+        public Response execute(Request request) throws IOException, ReCaptchaException {
+            okhttp3.Request.Builder rb = new okhttp3.Request.Builder()
+                    .url(request.url())
+                    .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36");
+
+            Map<String, List<String>> headers = request.headers();
+            if (headers != null) {
+                for (Map.Entry<String, List<String>> entry : headers.entrySet()) {
+                    for (String val : entry.getValue()) {
+                        rb.addHeader(entry.getKey(), val);
+                    }
+                }
+            }
+
+            // Kirim cookie jika user sudah login agar video restricted/member bisa diputar
+            if (!savedCookie.isEmpty() && request.url().contains("youtube.com")) {
+                rb.header("Cookie", savedCookie);
+            }
+
+            byte[] data = request.dataToSend();
+            if ("POST".equalsIgnoreCase(request.httpMethod())) {
+                RequestBody body = RequestBody.create(data != null ? data : new byte[0], null);
+                rb.post(body);
+            } else {
+                rb.get();
+            }
+
+            try (okhttp3.Response res = client.newCall(rb.build()).execute()) {
+                if (res.code() == 429) {
+                    throw new ReCaptchaException("reCaptcha Challenge requested", request.url());
+                }
+                String bodyStr = res.body() != null ? res.body().string() : "";
+                return new Response(
+                        res.code(),
+                        res.message(),
+                        res.headers().toMultimap(),
+                        bodyStr,
+                        res.request().url().toString()
+                );
+            }
+        }
+    }
+
     public static void init(Context context) {
         SharedPreferences prefs = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE);
         savedCookie = prefs.getString(KEY_COOKIE, "");
+        if (!newPipeInitialized) {
+            NewPipe.init(new OkHttpNewPipeDownloader(), new Localization("id", "ID"));
+            newPipeInitialized = true;
+        }
     }
 
     public static String getRawToken(Context context) {
@@ -132,8 +196,8 @@ public class YouTubeMusicClient {
         }
     }
 
-    private static Request.Builder buildWebRemixRequest(String endpoint, String payload) {
-        Request.Builder rb = new Request.Builder()
+    private static okhttp3.Request.Builder buildWebRemixRequest(String endpoint, String payload) {
+        okhttp3.Request.Builder rb = new okhttp3.Request.Builder()
                 .url("https://music.youtube.com/youtubei/v1/" + endpoint + "?prettyPrint=false")
                 .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36")
                 .header("Origin", "https://music.youtube.com")
@@ -163,7 +227,7 @@ public class YouTubeMusicClient {
                 + "}";
 
         List<HomeSection> sections = new ArrayList<>();
-        try (Response response = client.newCall(buildWebRemixRequest("browse", payload).build()).execute()) {
+        try (okhttp3.Response response = client.newCall(buildWebRemixRequest("browse", payload).build()).execute()) {
             if (!response.isSuccessful() || response.body() == null) return sections;
             JSONObject root = new JSONObject(response.body().string());
 
@@ -341,7 +405,7 @@ public class YouTubeMusicClient {
                 + "}";
 
         List<Song> results = new ArrayList<>();
-        try (Response response = client.newCall(buildWebRemixRequest("search", payload).build()).execute()) {
+        try (okhttp3.Response response = client.newCall(buildWebRemixRequest("search", payload).build()).execute()) {
             if (!response.isSuccessful() || response.body() == null) return results;
             JSONObject root = new JSONObject(response.body().string());
 
@@ -370,131 +434,27 @@ public class YouTubeMusicClient {
         return results;
     }
 
+    // Ekstraksi Stream Menggunakan NewPipeExtractor (Dekripsi signatureCipher & n-throttling otomatis)
     public static StreamResult getAudioStream(String videoId) {
-        String[][] clients = {
-                {
-                        "ANDROID_VR",
-                        "28",
-                        "1.60.19",
-                        "com.google.android.apps.youtube.vr.oculus/1.60.19 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip",
-                        "\"deviceMake\": \"Oculus\", \"deviceModel\": \"Quest 3\", \"androidSdkVersion\": 32, \"osName\": \"Android\", \"osVersion\": \"12L\""
-                },
-                {
-                        "IOS",
-                        "5",
-                        "19.45.4",
-                        "com.google.ios.youtube/19.45.4 (iPhone16,2; U; CPU iOS 18_1_0 like Mac OS X;)",
-                        "\"deviceMake\": \"Apple\", \"deviceModel\": \"iPhone16,2\", \"osName\": \"iPhone\", \"osVersion\": \"18.1.0.22B83\""
-                },
-                {
-                        "ANDROID_TESTSUITE",
-                        "30",
-                        "1.9",
-                        "com.google.android.youtube/1.9 (Linux; U; Android 13; en_US)",
-                        "\"androidSdkVersion\": 33, \"osName\": \"Android\", \"osVersion\": \"13\""
-                }
-        };
-
-        for (String[] c : clients) {
-            String streamUrl = fetchStreamWithClient(videoId, c[0], c[1], c[2], c[3], c[4]);
-            if (streamUrl != null && !streamUrl.isEmpty()) {
-                return new StreamResult(streamUrl, c[3]);
-            }
-        }
-
-        String pipedUrl = fetchFromPipedFallback(videoId);
-        if (pipedUrl != null && !pipedUrl.isEmpty()) {
-            return new StreamResult(pipedUrl, "Mozilla/5.0 (Android 14; Mobile)");
-        }
-        return null;
-    }
-
-    private static String fetchStreamWithClient(
-            String videoId, String clientName, String clientId, String clientVersion, String userAgent, String extraJson) {
         try {
-            String url = "https://www.youtube.com/youtubei/v1/player?prettyPrint=false";
-            String vdJson = visitorData.isEmpty() ? "" : "\"visitorData\": \"" + visitorData + "\", ";
-            String payload = "{"
-                    + "\"context\": {\"client\": {"
-                    + "\"clientName\": \"" + clientName + "\", "
-                    + "\"clientVersion\": \"" + clientVersion + "\", "
-                    + vdJson
-                    + extraJson + ", "
-                    + "\"hl\": \"id\", \"gl\": \"ID\""
-                    + "}},"
-                    + "\"videoId\": \"" + videoId + "\","
-                    + "\"playbackContext\": {\"contentPlaybackContext\": {\"html5Preference\": \"HTML5_PREF_WANTS\"}},"
-                    + "\"contentCheckOk\": true,"
-                    + "\"racyCheckOk\": true"
-                    + "}";
-
-            Request.Builder reqBuilder = new Request.Builder()
-                    .url(url)
-                    .header("User-Agent", userAgent)
-                    .header("X-YouTube-Client-Name", clientId)
-                    .header("X-YouTube-Client-Version", clientVersion)
-                    .header("Origin", "https://www.youtube.com")
-                    .post(RequestBody.create(payload, JSON));
-
-            if (!visitorData.isEmpty()) {
-                reqBuilder.header("X-Goog-Visitor-Id", visitorData);
-            }
-
-            try (Response response = client.newCall(reqBuilder.build()).execute()) {
-                if (!response.isSuccessful() || response.body() == null) return null;
-                JSONObject root = new JSONObject(response.body().string());
-                if (!root.has("streamingData")) return null;
-
-                JSONObject streamingData = root.getJSONObject("streamingData");
-                JSONArray formats = streamingData.optJSONArray("adaptiveFormats");
-                String bestAudioUrl = null;
-                int maxBitrate = 0;
-
-                if (formats != null) {
-                    for (int i = 0; i < formats.length(); i++) {
-                        JSONObject fmt = formats.getJSONObject(i);
-                        String mimeType = fmt.optString("mimeType", "");
-                        if (mimeType.startsWith("audio/") && fmt.has("url")) {
-                            int bitrate = fmt.optInt("bitrate", 0);
-                            if (bitrate > maxBitrate) {
-                                maxBitrate = bitrate;
-                                bestAudioUrl = fmt.getString("url");
-                            }
-                        }
-                    }
+            String watchUrl = "https://www.youtube.com/watch?v=" + videoId;
+            StreamInfo info = StreamInfo.getInfo(ServiceList.YouTube, watchUrl);
+            List<AudioStream> audioStreams = info.getAudioStreams();
+            if (audioStreams != null && !audioStreams.isEmpty()) {
+                AudioStream best = audioStreams.stream()
+                        .max(Comparator.comparingInt(AudioStream::getAverageBitrate))
+                        .orElse(audioStreams.get(0));
+                if (best != null && best.getContent() != null && !best.getContent().isEmpty()) {
+                    return new StreamResult(best.getContent(), null);
                 }
-                if (bestAudioUrl != null) return bestAudioUrl;
-
-                String hls = streamingData.optString("hlsManifestUrl", "");
-                if (!hls.isEmpty()) return hls;
             }
-        } catch (Exception ignored) {
-        }
-        return null;
-    }
-
-    private static String fetchFromPipedFallback(String videoId) {
-        String[] instances = {
-                "https://pipedapi.kavin.rocks/streams/",
-                "https://pipedapi.adminforge.de/streams/"
-        };
-        for (String base : instances) {
-            try {
-                Request req = new Request.Builder()
-                        .url(base + videoId)
-                        .header("User-Agent", "Mozilla/5.0")
-                        .build();
-                try (Response res = client.newCall(req).execute()) {
-                    if (!res.isSuccessful() || res.body() == null) continue;
-                    JSONObject obj = new JSONObject(res.body().string());
-                    JSONArray audioStreams = obj.optJSONArray("audioStreams");
-                    if (audioStreams != null && audioStreams.length() > 0) {
-                        return audioStreams.getJSONObject(0).optString("url", "");
-                    }
-                }
-            } catch (Exception ignored) {
+            // Fallback ke HLS jika audioStreams progresif kosong
+            if (info.getHlsUrl() != null && !info.getHlsUrl().isEmpty()) {
+                return new StreamResult(info.getHlsUrl(), null);
             }
+            return new StreamResult(null, "Audio streams kosong dari YouTube");
+        } catch (Exception e) {
+            return new StreamResult(null, e.getClass().getSimpleName() + ": " + e.getMessage());
         }
-        return null;
     }
 }

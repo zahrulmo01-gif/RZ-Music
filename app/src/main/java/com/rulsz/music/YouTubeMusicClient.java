@@ -10,8 +10,6 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 
 import okhttp3.MediaType;
@@ -36,7 +34,8 @@ public class YouTubeMusicClient {
     private static String savedAccountName = "RZ";
     private static String visitorData = "";
 
-    public static final Map<String, String> streamUserAgentMap = new ConcurrentHashMap<>();
+    public static volatile String currentActiveUserAgent =
+            "AppleCoreMedia/1.0.0.22D82 (iPhone; U; CPU OS 18_3_2 like Mac OS X; en_us)";
 
     public static class StreamResult {
         public String url;
@@ -515,18 +514,16 @@ public class YouTubeMusicClient {
         return results;
     }
 
-    // Verifikasi apakah URL audio benar-benar bisa di-stream (HTTP 200/206) dan bukan 403 Forbidden
     private static boolean isStreamPlayable(String streamUrl, String userAgent) {
         try {
             Request probe = new Request.Builder()
                     .url(streamUrl)
                     .header("User-Agent", userAgent)
-                    .header("Range", "bytes=0-1")
                     .get()
                     .build();
             try (Response res = client.newCall(probe).execute()) {
                 int code = res.code();
-                return code == 200 || code == 206;
+                return code >= 200 && code < 300;
             }
         } catch (Exception e) {
             return false;
@@ -537,42 +534,45 @@ public class YouTubeMusicClient {
         ensureVisitorData();
         StringBuilder errorLog = new StringBuilder();
 
-        // Urutan client Sonara yang lolos verifikasi HTTP 200/206 pada googlevideo.com
+        // Format: {clientName, clientIdHeader, clientVersion, apiUserAgent, streamPlaybackUserAgent, extraJson}
         String[][] clients = {
                 {
                         "IOS",
                         "5",
                         "20.10.4",
                         "com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)",
+                        "AppleCoreMedia/1.0.0.22D82 (iPhone; U; CPU OS 18_3_2 like Mac OS X; en_us)",
                         "\"deviceMake\": \"Apple\", \"deviceModel\": \"iPhone16,2\", \"osName\": \"iPhone\", \"osVersion\": \"18.3.2.22D82\""
+                },
+                {
+                        "ANDROID_CREATOR",
+                        "14",
+                        "24.47.100",
+                        "com.google.android.apps.youtube.creator/24.47.100 (Linux; U; Android 14; en_US) gzip",
+                        "com.google.android.apps.youtube.creator/24.47.100 (Linux; U; Android 14; en_US) gzip",
+                        "\"androidSdkVersion\": 34, \"osName\": \"Android\", \"osVersion\": \"14\""
                 },
                 {
                         "ANDROID_VR",
                         "28",
                         "1.61.48",
                         "com.google.android.apps.youtube.vr.oculus/1.61.48 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip",
+                        "com.google.android.apps.youtube.vr.oculus/1.61.48 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip",
                         "\"deviceMake\": \"Oculus\", \"deviceModel\": \"Quest 3\", \"androidSdkVersion\": 32, \"osName\": \"Android\", \"osVersion\": \"12L\""
-                },
-                {
-                        "ANDROID_TESTSUITE",
-                        "30",
-                        "1.9",
-                        "com.google.android.youtube/1.9 (Linux; U; Android 13; en_US)",
-                        "\"androidSdkVersion\": 33, \"osName\": \"Android\", \"osVersion\": \"13\""
                 }
         };
 
         for (String[] c : clients) {
-            StreamResult res = resolveViaYoutubeiGoogleapis(videoId, c[0], c[1], c[2], c[3], c[4], errorLog);
+            StreamResult res = resolveViaYoutubeiGoogleapis(videoId, c[0], c[1], c[2], c[3], c[4], c[5], errorLog);
             if (res != null && res.url != null) {
-                streamUserAgentMap.put(res.url, res.userAgent);
+                currentActiveUserAgent = res.userAgent;
                 return res;
             }
         }
 
         StreamResult fallback = fetchFromOpenAudioNodes(videoId);
         if (fallback != null && fallback.url != null) {
-            streamUserAgentMap.put(fallback.url, fallback.userAgent);
+            currentActiveUserAgent = fallback.userAgent;
             return fallback;
         }
 
@@ -581,7 +581,7 @@ public class YouTubeMusicClient {
 
     private static StreamResult resolveViaYoutubeiGoogleapis(
             String videoId, String clientName, String clientId, String clientVersion,
-            String userAgent, String extraJson, StringBuilder errorLog) {
+            String apiUserAgent, String streamUserAgent, String extraJson, StringBuilder errorLog) {
         try {
             String url = "https://youtubei.googleapis.com/youtubei/v1/player?prettyPrint=false";
             String vdJson = visitorData.isEmpty() ? "" : "\"visitorData\": \"" + visitorData + "\", ";
@@ -600,7 +600,7 @@ public class YouTubeMusicClient {
 
             Request.Builder rb = new Request.Builder()
                     .url(url)
-                    .header("User-Agent", userAgent)
+                    .header("User-Agent", apiUserAgent)
                     .header("X-YouTube-Client-Name", clientId)
                     .header("X-YouTube-Client-Version", clientVersion)
                     .header("Content-Type", "application/json")
@@ -620,13 +620,11 @@ public class YouTubeMusicClient {
 
                 JSONObject sd = root.getJSONObject("streamingData");
 
-                // 1. Cek HLS Manifest dulu pada IOS karena jarang terkena 403 IP lock
                 String hls = sd.optString("hlsManifestUrl", "");
-                if (!hls.isEmpty() && isStreamPlayable(hls, userAgent)) {
-                    return new StreamResult(hls, userAgent, null);
+                if (!hls.isEmpty() && isStreamPlayable(hls, streamUserAgent)) {
+                    return new StreamResult(hls, streamUserAgent, null);
                 }
 
-                // 2. Cek adaptiveFormats audio
                 JSONArray formats = sd.optJSONArray("adaptiveFormats");
                 String bestUrl = null;
                 int maxBitrate = 0;
@@ -645,8 +643,8 @@ public class YouTubeMusicClient {
                     }
                 }
                 if (bestUrl != null) {
-                    if (isStreamPlayable(bestUrl, userAgent)) {
-                        return new StreamResult(bestUrl, userAgent, null);
+                    if (isStreamPlayable(bestUrl, streamUserAgent)) {
+                        return new StreamResult(bestUrl, streamUserAgent, null);
                     } else {
                         errorLog.append(clientName).append(": 403 Blocked; ");
                     }
@@ -660,7 +658,6 @@ public class YouTubeMusicClient {
 
     private static StreamResult fetchFromOpenAudioNodes(String videoId) {
         String ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
-        // Invidious dengan local=true (mengalirkan audio lewat proxy server Invidious sehingga 100% bebas 403 IP)
         String[] invidiousInstances = {
                 "https://inv.nadeko.net",
                 "https://invidious.nerdvpn.de",

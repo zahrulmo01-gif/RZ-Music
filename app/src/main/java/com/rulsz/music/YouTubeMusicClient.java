@@ -34,7 +34,7 @@ public class YouTubeMusicClient {
 
     public static class Song {
         public String videoId;
-        public String browseId; // jika item adalah playlist/album
+        public String browseId;
         public String title;
         public String subtitle;
         public String thumbnail;
@@ -156,7 +156,6 @@ public class YouTubeMusicClient {
         return rb;
     }
 
-    // Ambil Section Beranda / Explore / Library langsung dari YouTube Music
     public static List<HomeSection> getBrowseSections(String browseId) throws Exception {
         String payload = "{"
                 + "\"context\": {\"client\": {\"clientName\": \"WEB_REMIX\", \"clientVersion\": \"1.20241118.01.00\", \"hl\": \"id\", \"gl\": \"ID\"}},"
@@ -245,81 +244,91 @@ public class YouTubeMusicClient {
     }
 
     private static Song parseMusicItem(JSONObject wrapper) {
-        if (wrapper.has("musicTwoRowItemRenderer")) {
-            JSONObject item = wrapper.getJSONObject("musicTwoRowItemRenderer");
-            String title = extractRunsText(item.optJSONObject("title"));
-            String subtitle = extractRunsText(item.optJSONObject("subtitle"));
-            String thumb = extractThumbnail(item.optJSONObject("thumbnailRenderer"));
+        try {
+            if (wrapper.has("musicTwoRowItemRenderer")) {
+                JSONObject item = wrapper.getJSONObject("musicTwoRowItemRenderer");
+                String title = extractRunsText(item.optJSONObject("title"));
+                String subtitle = extractRunsText(item.optJSONObject("subtitle"));
+                String thumb = extractThumbnail(item.optJSONObject("thumbnailRenderer"));
 
-            String videoId = "";
-            String browseId = "";
-            JSONObject nav = item.optJSONObject("navigationEndpoint");
-            if (nav != null) {
-                if (nav.has("watchEndpoint")) {
-                    videoId = nav.getJSONObject("watchEndpoint").optString("videoId", "");
-                } else if (nav.has("browseEndpoint")) {
+                String videoId = "";
+                String browseId = "";
+                JSONObject nav = item.optJSONObject("navigationEndpoint");
+                if (nav != null) {
+                    if (nav.has("watchEndpoint")) {
+                        videoId = nav.getJSONObject("watchEndpoint").optString("videoId", "");
+                    } else if (nav.has("browseEndpoint")) {
+                        browseId = nav.getJSONObject("browseEndpoint").optString("browseId", "");
+                    }
+                }
+                if (!videoId.isEmpty()) {
+                    if (thumb.isEmpty()) thumb = "https://i.ytimg.com/vi/" + videoId + "/sddefault.jpg";
+                    return new Song(videoId, "", title, subtitle, thumb, false);
+                } else if (!browseId.isEmpty()) {
+                    return new Song("", browseId, title, subtitle, thumb, true);
+                }
+            } else if (wrapper.has("musicResponsiveListItemRenderer")) {
+                JSONObject item = wrapper.getJSONObject("musicResponsiveListItemRenderer");
+                String videoId = item.optJSONObject("playlistItemData") != null
+                        ? item.getJSONObject("playlistItemData").optString("videoId", "") : "";
+                String browseId = "";
+                JSONObject nav = item.optJSONObject("navigationEndpoint");
+                if (nav != null && nav.has("browseEndpoint")) {
                     browseId = nav.getJSONObject("browseEndpoint").optString("browseId", "");
                 }
-            }
-            if (!videoId.isEmpty()) {
-                if (thumb.isEmpty()) thumb = "https://i.ytimg.com/vi/" + videoId + "/sddefault.jpg";
-                return new Song(videoId, "", title, subtitle, thumb, false);
-            } else if (!browseId.isEmpty()) {
-                return new Song("", browseId, title, subtitle, thumb, true);
-            }
-        } else if (wrapper.has("musicResponsiveListItemRenderer")) {
-            JSONObject item = wrapper.getJSONObject("musicResponsiveListItemRenderer");
-            String videoId = item.optJSONObject("playlistItemData") != null
-                    ? item.getJSONObject("playlistItemData").optString("videoId", "") : "";
-            String browseId = "";
-            JSONObject nav = item.optJSONObject("navigationEndpoint");
-            if (nav != null && nav.has("browseEndpoint")) {
-                browseId = nav.getJSONObject("browseEndpoint").optString("browseId", "");
-            }
 
-            JSONArray flexCols = item.optJSONArray("flexColumns");
-            String title = "";
-            String subtitle = "";
-            if (flexCols != null && flexCols.length() > 0) {
-                title = extractRunsText(flexCols.getJSONObject(0)
-                        .getJSONObject("musicResponsiveListItemFlexColumnRenderer").optJSONObject("text"));
-            }
-            if (flexCols != null && flexCols.length() > 1) {
-                subtitle = extractRunsText(flexCols.getJSONObject(1)
-                        .getJSONObject("musicResponsiveListItemFlexColumnRenderer").optJSONObject("text"));
-            }
+                JSONArray flexCols = item.optJSONArray("flexColumns");
+                String title = "";
+                String subtitle = "";
+                if (flexCols != null && flexCols.length() > 0) {
+                    title = extractRunsText(flexCols.getJSONObject(0)
+                            .getJSONObject("musicResponsiveListItemFlexColumnRenderer").optJSONObject("text"));
+                }
+                if (flexCols != null && flexCols.length() > 1) {
+                    subtitle = extractRunsText(flexCols.getJSONObject(1)
+                            .getJSONObject("musicResponsiveListItemFlexColumnRenderer").optJSONObject("text"));
+                }
 
-            String thumb = extractThumbnail(item.optJSONObject("thumbnail"));
-            if (!videoId.isEmpty()) {
-                if (thumb.isEmpty()) thumb = "https://i.ytimg.com/vi/" + videoId + "/sddefault.jpg";
-                return new Song(videoId, "", title, subtitle, thumb, false);
-            } else if (!browseId.isEmpty()) {
-                return new Song("", browseId, title, subtitle, thumb, true);
+                String thumb = extractThumbnail(item.optJSONObject("thumbnail"));
+                if (!videoId.isEmpty()) {
+                    if (thumb.isEmpty()) thumb = "https://i.ytimg.com/vi/" + videoId + "/sddefault.jpg";
+                    return new Song(videoId, "", title, subtitle, thumb, false);
+                } else if (!browseId.isEmpty()) {
+                    return new Song("", browseId, title, subtitle, thumb, true);
+                }
             }
+        } catch (Exception ignored) {
         }
         return null;
     }
 
     private static String extractRunsText(JSONObject textObj) {
         if (textObj == null) return "";
-        JSONArray runs = textObj.optJSONArray("runs");
-        if (runs == null) return textObj.optString("simpleText", "");
-        StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < runs.length(); i++) {
-            sb.append(runs.getJSONObject(i).optString("text", ""));
+        try {
+            JSONArray runs = textObj.optJSONArray("runs");
+            if (runs == null) return textObj.optString("simpleText", "");
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < runs.length(); i++) {
+                sb.append(runs.getJSONObject(i).optString("text", ""));
+            }
+            return sb.toString();
+        } catch (Exception e) {
+            return "";
         }
-        return sb.toString();
     }
 
     private static String extractThumbnail(JSONObject thumbContainer) {
         if (thumbContainer == null) return "";
-        JSONObject mtr = thumbContainer.optJSONObject("musicThumbnailRenderer");
-        if (mtr == null) return "";
-        JSONObject thumbObj = mtr.optJSONObject("thumbnail");
-        if (thumbObj == null) return "";
-        JSONArray thumbs = thumbObj.optJSONArray("thumbnails");
-        if (thumbs != null && thumbs.length() > 0) {
-            return thumbs.getJSONObject(thumbs.length() - 1).optString("url", "");
+        try {
+            JSONObject mtr = thumbContainer.optJSONObject("musicThumbnailRenderer");
+            if (mtr == null) return "";
+            JSONObject thumbObj = mtr.optJSONObject("thumbnail");
+            if (thumbObj == null) return "";
+            JSONArray thumbs = thumbObj.optJSONArray("thumbnails");
+            if (thumbs != null && thumbs.length() > 0) {
+                return thumbs.getJSONObject(thumbs.length() - 1).optString("url", "");
+            }
+        } catch (Exception ignored) {
         }
         return "";
     }
@@ -361,7 +370,6 @@ public class YouTubeMusicClient {
         return results;
     }
 
-    // Pengambilan Audio Stream Anti-Gagal (Tanpa mencampur cookie browser ke client mobile/VR + dukungan HLS)
     public static StreamResult getAudioStream(String videoId) {
         String[][] clients = {
                 {
@@ -394,7 +402,6 @@ public class YouTubeMusicClient {
             }
         }
 
-        // Fallback terakhir ke Piped public API jika IP ISP memblokir /player langsung
         String pipedUrl = fetchFromPipedFallback(videoId);
         if (pipedUrl != null && !pipedUrl.isEmpty()) {
             return new StreamResult(pipedUrl, "Mozilla/5.0 (Android 14; Mobile)");
@@ -458,7 +465,6 @@ public class YouTubeMusicClient {
                 }
                 if (bestAudioUrl != null) return bestAudioUrl;
 
-                // Fallback ke HLS Manifest (khusus client IOS) jika adaptiveFormats terenkripsi
                 String hls = streamingData.optString("hlsManifestUrl", "");
                 if (!hls.isEmpty()) return hls;
             }

@@ -83,7 +83,7 @@ public class MainActivity extends AppCompatActivity {
     private LinearLayout playlistSongsContainer;
     private TextView playlistHeaderTitle;
 
-    // Bottom Dock (Expanded with Draggable LiquidGlassNavView vs Compact Scroll Mode)
+    // Bottom Dock (Expanded Sonara Layout vs Compact Scroll Layout)
     private LinearLayout expandedDock;
     private LinearLayout compactDock;
     private LiquidGlassNavView liquidNavBar;
@@ -157,7 +157,7 @@ public class MainActivity extends AppCompatActivity {
         rootFrame.addView(playlistDetailOverlay, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
-        // Expanded Bottom Dock (Mini Player + Draggable LiquidGlassNavView)
+        // Expanded Bottom Dock (Mini Player + LiquidGlassNavView 3-Tab + Search Circle)
         expandedDock = buildExpandedDock();
         FrameLayout.LayoutParams dockParams = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -206,9 +206,6 @@ public class MainActivity extends AppCompatActivity {
             loadFeedTab("EXPLORE", "FEmusic_explore", "");
         } else if (index == 2) {
             loadFeedTab("LIBRARY", "FEmusic_liked_playlists", "");
-        } else if (index == 3) {
-            playlistDetailOverlay.setVisibility(View.GONE);
-            searchOverlay.setVisibility(View.VISIBLE);
         }
     }
 
@@ -781,7 +778,7 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
-    // Dock Bawah Mode Normal (Mini Player + LiquidGlassNavView dari Sonara)
+    // Dock Bawah Mode Normal (Mini Player + Kapsul LiquidGlass 3-Tab + Lingkaran Search Terpisah persis Sonara)
     private LinearLayout buildExpandedDock() {
         LinearLayout dock = new LinearLayout(this);
         dock.setOrientation(LinearLayout.VERTICAL);
@@ -841,21 +838,40 @@ public class MainActivity extends AppCompatActivity {
         miniLp.setMargins(0, 0, 0, dp(10));
         dock.addView(miniPlayerCard, miniLp);
 
-        // Draggable LiquidGlassNavView persis seperti Sonara
+        // Baris Bawah: Kapsul LiquidGlass 3-Tab (Kiri) + Lingkaran Search Terpisah (Kanan)
+        LinearLayout navRow = new LinearLayout(this);
+        navRow.setOrientation(LinearLayout.HORIZONTAL);
+        navRow.setGravity(Gravity.CENTER_VERTICAL);
+        navRow.setClipChildren(false);
+
         liquidNavBar = new LiquidGlassNavView(
                 this,
                 new int[]{
                         R.drawable.ic_home,
                         R.drawable.ic_explore,
-                        R.drawable.ic_library,
-                        R.drawable.ic_search
+                        R.drawable.ic_library
                 },
-                new String[]{"Home", "Explore", "Library", "Search"}
+                new String[]{"Home", "Explore", "Library"}
         );
         liquidNavBar.setOnTabSelectedListener(this::onNavTabSelected);
-        dock.addView(liquidNavBar, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(64)));
+        LinearLayout.LayoutParams navLp = new LinearLayout.LayoutParams(0, dp(62), 1f);
+        navLp.setMargins(0, 0, dp(10), 0);
+        navRow.addView(liquidNavBar, navLp);
 
+        ImageView searchCircleBtn = new ImageView(this);
+        searchCircleBtn.setImageResource(R.drawable.ic_search);
+        searchCircleBtn.setColorFilter(Color.WHITE);
+        searchCircleBtn.setPadding(dp(18), dp(18), dp(18), dp(18));
+        searchCircleBtn.setBackground(createGlassSurface(
+                Color.parseColor("#EB18191F"), Color.parseColor("#44FFFFFF"), dp(31)));
+        applySpringTouch(searchCircleBtn);
+        searchCircleBtn.setOnClickListener(v -> {
+            playlistDetailOverlay.setVisibility(View.GONE);
+            searchOverlay.setVisibility(View.VISIBLE);
+        });
+        navRow.addView(searchCircleBtn, new LinearLayout.LayoutParams(dp(62), dp(62)));
+
+        dock.addView(navRow);
         return dock;
     }
 
@@ -867,10 +883,10 @@ public class MainActivity extends AppCompatActivity {
 
         ImageView homeCircle = new ImageView(this);
         homeCircle.setImageResource(R.drawable.ic_home);
-        homeCircle.setColorFilter(Color.parseColor("#22C55E"));
+        homeCircle.setColorFilter(Color.WHITE);
         homeCircle.setPadding(dp(15), dp(15), dp(15), dp(15));
         homeCircle.setBackground(createGlassSurface(
-                Color.parseColor("#EB15161B"), Color.parseColor("#4DFFFFFF"), dp(27)));
+                Color.parseColor("#EB18191F"), Color.parseColor("#4DFFFFFF"), dp(27)));
         applySpringTouch(homeCircle);
         homeCircle.setOnClickListener(v -> {
             feedScrollView.smoothScrollTo(0, 0);
@@ -883,7 +899,7 @@ public class MainActivity extends AppCompatActivity {
         centerPill.setGravity(Gravity.CENTER_VERTICAL);
         centerPill.setPadding(dp(8), dp(6), dp(12), dp(6));
         centerPill.setBackground(createGlassSurface(
-                Color.parseColor("#EB15161B"), Color.parseColor("#4DFFFFFF"), dp(27)));
+                Color.parseColor("#EB18191F"), Color.parseColor("#4DFFFFFF"), dp(27)));
         applySpringTouch(centerPill);
 
         compactCover = new ImageView(this);
@@ -917,11 +933,12 @@ public class MainActivity extends AppCompatActivity {
         searchCircle.setColorFilter(Color.WHITE);
         searchCircle.setPadding(dp(15), dp(15), dp(15), dp(15));
         searchCircle.setBackground(createGlassSurface(
-                Color.parseColor("#EB15161B"), Color.parseColor("#4DFFFFFF"), dp(27)));
+                Color.parseColor("#EB18191F"), Color.parseColor("#4DFFFFFF"), dp(27)));
         applySpringTouch(searchCircle);
         searchCircle.setOnClickListener(v -> {
             switchToCompactDock(false);
-            liquidNavBar.selectTab(3, true);
+            playlistDetailOverlay.setVisibility(View.GONE);
+            searchOverlay.setVisibility(View.VISIBLE);
         });
         row.addView(searchCircle, new LinearLayout.LayoutParams(dp(54), dp(54)));
 

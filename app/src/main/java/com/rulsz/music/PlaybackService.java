@@ -12,8 +12,7 @@ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory;
 import androidx.media3.session.MediaSession;
 import androidx.media3.session.MediaSessionService;
 
-import java.util.HashMap;
-import java.util.Map;
+import java.util.Collections;
 
 public class PlaybackService extends MediaSessionService {
     private MediaSession mediaSession;
@@ -37,16 +36,12 @@ public class PlaybackService extends MediaSessionService {
                 dataSpec -> {
                     String uriStr = dataSpec.uri.toString();
                     String matchedUa = YouTubeMusicClient.streamUserAgentMap.get(uriStr);
-                    Map<String, String> headers = new HashMap<>();
-                    if (matchedUa != null && !matchedUa.isEmpty()) {
-                        headers.put("User-Agent", matchedUa);
-                    } else {
-                        headers.put("User-Agent", "com.google.android.apps.youtube.vr.oculus/1.61.48 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip");
+                    if (matchedUa == null || matchedUa.isEmpty()) {
+                        matchedUa = "com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)";
                     }
-                    headers.put("Origin", "https://www.youtube.com");
-                    headers.put("Referer", "https://www.youtube.com/");
+                    // JANGAN kirim Origin/Referer ke googlevideo.com agar tidak terkena 403 Forbidden
                     return dataSpec.buildUpon()
-                            .setHttpRequestHeaders(headers)
+                            .setHttpRequestHeaders(Collections.singletonMap("User-Agent", matchedUa))
                             .build();
                 }
         );

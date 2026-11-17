@@ -14,6 +14,16 @@ public class YouTubeMusicClient {
     private static final OkHttpClient client = new OkHttpClient();
     private static final MediaType JSON = MediaType.get("application/json; charset=utf-8");
 
+    public static class StreamResult {
+        public String url;
+        public String userAgent;
+
+        public StreamResult(String url, String userAgent) {
+            this.url = url;
+            this.userAgent = userAgent;
+        }
+    }
+
     public static class Song {
         public String videoId;
         public String title;
@@ -89,33 +99,63 @@ public class YouTubeMusicClient {
         return results;
     }
 
-    public static String getAudioStreamUrl(String videoId) throws Exception {
-        // Rantai fallback client ala Convx 2.0 (VISIONOS -> ANDROID_MUSIC)
+    public static StreamResult getAudioStream(String videoId) {
+        // Format: {clientName, clientIdHeader, clientVersion, userAgent, extraClientJson}
         String[][] clients = {
-                {"VISIONOS", "0.1", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15"},
-                {"ANDROID_MUSIC", "7.03.52", "com.google.android.apps.youtube.music/7.03.52 (Linux; U; Android 14)"}
+                {
+                        "ANDROID_VR",
+                        "28",
+                        "1.60.19",
+                        "com.google.android.apps.youtube.vr.oculus/1.60.19 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip",
+                        "\"deviceMake\": \"Oculus\", \"deviceModel\": \"Quest 3\", \"androidSdkVersion\": 32, \"osName\": \"Android\", \"osVersion\": \"12L\""
+                },
+                {
+                        "IOS",
+                        "5",
+                        "19.45.4",
+                        "com.google.ios.youtube/19.45.4 (iPhone16,2; U; CPU iOS 18_1_0 like Mac OS X;)",
+                        "\"deviceMake\": \"Apple\", \"deviceModel\": \"iPhone16,2\", \"osName\": \"iPhone\", \"osVersion\": \"18.1.0.22B83\""
+                },
+                {
+                        "ANDROID_MUSIC",
+                        "21",
+                        "7.27.52",
+                        "com.google.android.apps.youtube.music/7.27.52 (Linux; U; Android 14; gzip)",
+                        "\"androidSdkVersion\": 34, \"osName\": \"Android\", \"osVersion\": \"14\""
+                }
         };
 
         for (String[] c : clients) {
-            String stream = fetchStreamWithClient(videoId, c[0], c[1], c[2]);
-            if (stream != null && !stream.isEmpty()) {
-                return stream;
+            String streamUrl = fetchStreamWithClient(videoId, c[0], c[1], c[2], c[3], c[4]);
+            if (streamUrl != null && !streamUrl.isEmpty()) {
+                return new StreamResult(streamUrl, c[3]);
             }
         }
         return null;
     }
 
-    private static String fetchStreamWithClient(String videoId, String clientName, String clientVersion, String userAgent) {
+    private static String fetchStreamWithClient(
+            String videoId, String clientName, String clientId, String clientVersion, String userAgent, String extraJson) {
         try {
-            String url = "https://music.youtube.com/youtubei/v1/player?prettyPrint=false";
+            String url = "https://www.youtube.com/youtubei/v1/player?prettyPrint=false";
             String payload = "{"
-                    + "\"context\": {\"client\": {\"clientName\": \"" + clientName + "\", \"clientVersion\": \"" + clientVersion + "\", \"hl\": \"id\", \"gl\": \"ID\"}},"
-                    + "\"videoId\": \"" + videoId + "\""
+                    + "\"context\": {\"client\": {"
+                    + "\"clientName\": \"" + clientName + "\", "
+                    + "\"clientVersion\": \"" + clientVersion + "\", "
+                    + extraJson + ", "
+                    + "\"hl\": \"id\", \"gl\": \"ID\""
+                    + "}},"
+                    + "\"videoId\": \"" + videoId + "\","
+                    + "\"contentCheckOk\": true,"
+                    + "\"racyCheckOk\": true"
                     + "}";
 
             Request request = new Request.Builder()
                     .url(url)
                     .header("User-Agent", userAgent)
+                    .header("X-YouTube-Client-Name", clientId)
+                    .header("X-YouTube-Client-Version", clientVersion)
+                    .header("Origin", "https://www.youtube.com")
                     .post(RequestBody.create(payload, JSON))
                     .build();
 
@@ -124,13 +164,17 @@ public class YouTubeMusicClient {
                 JSONObject root = new JSONObject(response.body().string());
                 if (!root.has("streamingData")) return null;
 
-                JSONArray formats = root.getJSONObject("streamingData").getJSONArray("adaptiveFormats");
+                JSONObject streamingData = root.getJSONObject("streamingData");
+                JSONArray formats = streamingData.optJSONArray("adaptiveFormats");
+                if (formats == null) return null;
+
                 String bestAudioUrl = null;
                 int maxBitrate = 0;
 
                 for (int i = 0; i < formats.length(); i++) {
                     JSONObject fmt = formats.getJSONObject(i);
                     String mimeType = fmt.optString("mimeType", "");
+                    // Ambil stream audio m4a/webm yang memiliki direct url (bukan signatureCipher)
                     if (mimeType.startsWith("audio/") && fmt.has("url")) {
                         int bitrate = fmt.optInt("bitrate", 0);
                         if (bitrate > maxBitrate) {

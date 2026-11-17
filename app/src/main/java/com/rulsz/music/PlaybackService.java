@@ -34,14 +34,12 @@ public class PlaybackService extends MediaSessionService {
         DataSource.Factory resolvingFactory = new ResolvingDataSource.Factory(
                 httpFactory,
                 dataSpec -> {
-                    String uriStr = dataSpec.uri.toString();
-                    String matchedUa = YouTubeMusicClient.streamUserAgentMap.get(uriStr);
-                    if (matchedUa == null || matchedUa.isEmpty()) {
-                        matchedUa = "com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)";
+                    String ua = YouTubeMusicClient.currentActiveUserAgent;
+                    if (ua == null || ua.isEmpty()) {
+                        ua = "AppleCoreMedia/1.0.0.22D82 (iPhone; U; CPU OS 18_3_2 like Mac OS X; en_us)";
                     }
-                    // JANGAN kirim Origin/Referer ke googlevideo.com agar tidak terkena 403 Forbidden
                     return dataSpec.buildUpon()
-                            .setHttpRequestHeaders(Collections.singletonMap("User-Agent", matchedUa))
+                            .setHttpRequestHeaders(Collections.singletonMap("User-Agent", ua))
                             .build();
                 }
         );

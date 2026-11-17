@@ -3,17 +3,10 @@ package com.rulsz.music;
 import android.animation.ValueAnimator;
 import android.app.AlertDialog;
 import android.content.ComponentName;
-import android.content.Context;
 import android.content.res.ColorStateList;
 import android.graphics.Bitmap;
-import android.graphics.Canvas;
 import android.graphics.Color;
-import android.graphics.LinearGradient;
 import android.graphics.Outline;
-import android.graphics.Paint;
-import android.graphics.RadialGradient;
-import android.graphics.RectF;
-import android.graphics.Shader;
 import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.Drawable;
@@ -48,6 +41,7 @@ import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.media3.common.MediaItem;
 import androidx.media3.common.MediaMetadata;
+import androidx.media3.common.PlaybackException;
 import androidx.media3.common.Player;
 import androidx.media3.session.MediaController;
 import androidx.media3.session.SessionToken;
@@ -89,10 +83,10 @@ public class MainActivity extends AppCompatActivity {
     private LinearLayout playlistSongsContainer;
     private TextView playlistHeaderTitle;
 
-    // Bottom Dock (Expanded with Draggable Liquid Glass vs Compact Scroll Mode)
+    // Bottom Dock (Expanded with Draggable LiquidGlassNavView vs Compact Scroll Mode)
     private LinearLayout expandedDock;
     private LinearLayout compactDock;
-    private LiquidGlassNavBar liquidNavBar;
+    private LiquidGlassNavView liquidNavBar;
     private boolean isCompactDockMode = false;
 
     // Profile & Settings
@@ -144,7 +138,7 @@ public class MainActivity extends AppCompatActivity {
         rootFrame.addView(feedScrollView, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
-        // Deteksi Scroll untuk Morphing Navbar persis seperti di video (0:00 -> 0:02)
+        // Morphing Navbar saat scroll ke bawah
         feedScrollView.setOnScrollChangeListener((v, scrollX, scrollY, oldScrollX, oldScrollY) -> {
             if (scrollY > dp(45) && !isCompactDockMode) {
                 switchToCompactDock(true);
@@ -163,7 +157,7 @@ public class MainActivity extends AppCompatActivity {
         rootFrame.addView(playlistDetailOverlay, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
-        // Expanded Bottom Dock (Mini Player + Draggable Liquid Glass Nav)
+        // Expanded Bottom Dock (Mini Player + Draggable LiquidGlassNavView)
         expandedDock = buildExpandedDock();
         FrameLayout.LayoutParams dockParams = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -205,223 +199,16 @@ public class MainActivity extends AppCompatActivity {
         loadFeedTab("HOME", "FEmusic_home", "");
     }
 
-    // Custom Draggable Liquid Glass Navigation Bar (Persis seperti detik 0:03 - 0:06 di video)
-    private class LiquidGlassNavBar extends FrameLayout {
-        private final List<ImageView> tabIcons = new ArrayList<>();
-        private final GlassLensView glassLens;
-        private int selectedIndex = 0;
-        private float currentLensX = 0f;
-        private float lensScale = 1.0f;
-        private boolean isDragging = false;
-        private float downX = 0f;
-        private float startLensX = 0f;
-        private ValueAnimator snapAnimator;
-        private ValueAnimator scaleAnimator;
-
-        private final int activeNeonGreen = Color.parseColor("#22C55E");
-        private final int inactiveWhite = Color.parseColor("#E2E8F0");
-
-        public LiquidGlassNavBar(Context context, int[] iconResIds) {
-            super(context);
-            setClipChildren(false);
-            setClipToPadding(false);
-            setBackground(createGlassSurface(
-                    Color.parseColor("#EB15161B"), Color.parseColor("#38FFFFFF"), dp(34)));
-
-            // 1. Lensa Liquid Glass yang bisa digeser-geser
-            glassLens = new GlassLensView(context);
-            addView(glassLens, new LayoutParams(dp(76), dp(50)));
-
-            // 2. Baris 4 Ikon Tab (Home, Explore, Library, Settings/Create)
-            LinearLayout iconsRow = new LinearLayout(context);
-            iconsRow.setOrientation(LinearLayout.HORIZONTAL);
-            iconsRow.setGravity(Gravity.CENTER);
-
-            for (int i = 0; i < iconResIds.length; i++) {
-                FrameLayout slot = new FrameLayout(context);
-                ImageView iv = new ImageView(context);
-                iv.setImageResource(iconResIds[i]);
-                iv.setColorFilter(i == 0 ? activeNeonGreen : inactiveWhite);
-                LayoutParams ivLp = new LayoutParams(dp(24), dp(24));
-                ivLp.gravity = Gravity.CENTER;
-                slot.addView(iv, ivLp);
-                tabIcons.add(iv);
-
-                iconsRow.addView(slot, new LinearLayout.LayoutParams(0, dp(62), 1f));
-            }
-            addView(iconsRow, new LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(62)));
-        }
-
-        @Override
-        protected void onLayout(boolean changed, int left, int top, int right, int bottom) {
-            super.onLayout(changed, left, top, right, bottom);
-            if (!isDragging && getWidth() > 0 && !tabIcons.isEmpty()) {
-                float slotW = (float) getWidth() / tabIcons.size();
-                int lensW = (int) (slotW * 0.88f);
-                if (glassLens.getLayoutParams().width != lensW) {
-                    glassLens.getLayoutParams().width = lensW;
-                    glassLens.requestLayout();
-                }
-                currentLensX = getTargetXForIndex(selectedIndex);
-                glassLens.setTranslationX(currentLensX);
-                glassLens.setTranslationY((getHeight() - glassLens.getHeight()) / 2f);
-            }
-        }
-
-        private float getTargetXForIndex(int index) {
-            if (tabIcons.isEmpty()) return 0f;
-            float slotW = (float) getWidth() / tabIcons.size();
-            float lensW = glassLens.getWidth() > 0 ? glassLens.getWidth() : (slotW * 0.88f);
-            return (index * slotW) + (slotW - lensW) / 2f;
-        }
-
-        @Override
-        public boolean onInterceptTouchEvent(MotionEvent ev) {
-            return true; // Tangkap semua sentuhan & geseran secara halus
-        }
-
-        @Override
-        public boolean onTouchEvent(MotionEvent event) {
-            if (getWidth() == 0 || tabIcons.isEmpty()) return false;
-            float slotW = (float) getWidth() / tabIcons.size();
-            float maxLensX = getWidth() - glassLens.getWidth() - dp(4);
-
-            switch (event.getAction()) {
-                case MotionEvent.ACTION_DOWN:
-                    if (snapAnimator != null) snapAnimator.cancel();
-                    isDragging = true;
-                    downX = event.getX();
-                    startLensX = currentLensX;
-                    animateLensScale(1.14f); // Membesar seperti tetesan liquid glass saat disentuh
-                    return true;
-
-                case MotionEvent.ACTION_MOVE:
-                    float dx = event.getX() - downX;
-                    // Jika user hanya tap ringan di tab lain, geser ke posisi jari
-                    float rawX = Math.abs(dx) > dp(6)
-                            ? (startLensX + dx)
-                            : (event.getX() - glassLens.getWidth() / 2f);
-                    currentLensX = Math.max(dp(4), Math.min(maxLensX, rawX));
-                    glassLens.setTranslationX(currentLensX);
-                    updateIconHighlightsByLensPosition();
-                    return true;
-
-                case MotionEvent.ACTION_UP:
-                case MotionEvent.ACTION_CANCEL:
-                    isDragging = false;
-                    animateLensScale(1.0f);
-                    float center = currentLensX + (glassLens.getWidth() / 2f);
-                    int targetIdx = Math.max(0, Math.min(tabIcons.size() - 1, (int) (center / slotW)));
-                    selectTab(targetIdx, true);
-                    return true;
-            }
-            return super.onTouchEvent(event);
-        }
-
-        public void selectTab(int index, boolean triggerAction) {
-            selectedIndex = index;
-            float targetX = getTargetXForIndex(index);
-            if (snapAnimator != null) snapAnimator.cancel();
-            snapAnimator = ValueAnimator.ofFloat(currentLensX, targetX);
-            snapAnimator.setDuration(320);
-            snapAnimator.setInterpolator(new OvershootInterpolator(1.35f));
-            snapAnimator.addUpdateListener(anim -> {
-                currentLensX = (float) anim.getAnimatedValue();
-                glassLens.setTranslationX(currentLensX);
-                updateIconHighlightsByLensPosition();
-            });
-            snapAnimator.start();
-
-            if (triggerAction) {
-                onNavTabSelected(index);
-            }
-        }
-
-        private void animateLensScale(float targetScale) {
-            if (scaleAnimator != null) scaleAnimator.cancel();
-            scaleAnimator = ValueAnimator.ofFloat(lensScale, targetScale);
-            scaleAnimator.setDuration(180);
-            scaleAnimator.addUpdateListener(anim -> {
-                lensScale = (float) anim.getAnimatedValue();
-                glassLens.setScaleX(lensScale);
-                glassLens.setScaleY(lensScale);
-            });
-            scaleAnimator.start();
-        }
-
-        private void updateIconHighlightsByLensPosition() {
-            float lensCenter = currentLensX + glassLens.getWidth() / 2f;
-            float slotW = (float) getWidth() / tabIcons.size();
-            for (int i = 0; i < tabIcons.size(); i++) {
-                float iconCenter = (i + 0.5f) * slotW;
-                float dist = Math.abs(lensCenter - iconCenter);
-                if (dist < slotW * 0.45f) {
-                    tabIcons.get(i).setColorFilter(activeNeonGreen);
-                    tabIcons.get(i).setScaleX(1.08f);
-                    tabIcons.get(i).setScaleY(1.08f);
-                } else {
-                    tabIcons.get(i).setColorFilter(inactiveWhite);
-                    tabIcons.get(i).setScaleX(1.0f);
-                    tabIcons.get(i).setScaleY(1.0f);
-                }
-            }
-        }
-    }
-
-    // Custom Canvas View untuk Efek Refraksi Liquid Glass (Specular Rim + Inner Glow)
-    private class GlassLensView extends View {
-        private final Paint fillPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint glowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint rimPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final RectF rect = new RectF();
-
-        public GlassLensView(Context context) {
-            super(context);
-            rimPaint.setStyle(Paint.Style.STROKE);
-                        rimPaint.setStrokeWidth(1.4f * getResources().getDisplayMetrics().density);
-
-        }
-
-        @Override
-        protected void onDraw(Canvas canvas) {
-            super.onDraw(canvas);
-            float w = getWidth();
-            float h = getHeight();
-            float r = h / 2f;
-            rect.set(dp(1), dp(1), w - dp(1), h - dp(1));
-
-            // 1. Pendaran cairan hijau/kaca halus di bagian bawah lensa
-            glowPaint.setShader(new RadialGradient(
-                    w * 0.5f, h * 0.85f, w * 0.65f,
-                    new int[]{Color.parseColor("#3822C55E"), Color.parseColor("#18FFFFFF"), Color.TRANSPARENT},
-                    null, Shader.TileMode.CLAMP));
-            canvas.drawRoundRect(rect, r, r, glowPaint);
-
-            // 2. Permukaan kaca translucent
-            fillPaint.setShader(new LinearGradient(
-                    0, 0, 0, h,
-                    Color.parseColor("#2EFFFFFF"), Color.parseColor("#12FFFFFF"), Shader.TileMode.CLAMP));
-            canvas.drawRoundRect(rect, r, r, fillPaint);
-
-            // 3. Specular Refractive Border (cahaya putih tajam di atas & bawah kapsul)
-            rimPaint.setShader(new LinearGradient(
-                    0, 0, 0, h,
-                    new int[]{Color.parseColor("#AAFFFFFF"), Color.parseColor("#22FFFFFF"), Color.parseColor("#77FFFFFF")},
-                    null, Shader.TileMode.CLAMP));
-            canvas.drawRoundRect(rect, r, r, rimPaint);
-        }
-    }
-
     private void onNavTabSelected(int index) {
         if (index == 0) {
             loadFeedTab("HOME", "FEmusic_home", "");
         } else if (index == 1) {
-            playlistDetailOverlay.setVisibility(View.GONE);
-            searchOverlay.setVisibility(View.VISIBLE);
+            loadFeedTab("EXPLORE", "FEmusic_explore", "");
         } else if (index == 2) {
             loadFeedTab("LIBRARY", "FEmusic_liked_playlists", "");
         } else if (index == 3) {
-            loadFeedTab("EXPLORE", "FEmusic_explore", "");
+            playlistDetailOverlay.setVisibility(View.GONE);
+            searchOverlay.setVisibility(View.VISIBLE);
         }
     }
 
@@ -994,7 +781,7 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
-    // Dock Bawah Mode Normal (Mini Player + Draggable Liquid Glass NavBar)
+    // Dock Bawah Mode Normal (Mini Player + LiquidGlassNavView dari Sonara)
     private LinearLayout buildExpandedDock() {
         LinearLayout dock = new LinearLayout(this);
         dock.setOrientation(LinearLayout.VERTICAL);
@@ -1054,20 +841,25 @@ public class MainActivity extends AppCompatActivity {
         miniLp.setMargins(0, 0, 0, dp(10));
         dock.addView(miniPlayerCard, miniLp);
 
-        // Draggable Liquid Glass Navigation Pill (4 Tab: Home, Search, Library, Explore)
-        liquidNavBar = new LiquidGlassNavBar(this, new int[]{
-                R.drawable.ic_home,
-                R.drawable.ic_search,
-                R.drawable.ic_library,
-                R.drawable.ic_explore
-        });
+        // Draggable LiquidGlassNavView persis seperti Sonara
+        liquidNavBar = new LiquidGlassNavView(
+                this,
+                new int[]{
+                        R.drawable.ic_home,
+                        R.drawable.ic_explore,
+                        R.drawable.ic_library,
+                        R.drawable.ic_search
+                },
+                new String[]{"Home", "Explore", "Library", "Search"}
+        );
+        liquidNavBar.setOnTabSelectedListener(this::onNavTabSelected);
         dock.addView(liquidNavBar, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(62)));
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(64)));
 
         return dock;
     }
 
-    // Dock Bawah Mode Scroll (Persis detik 0:02 di video: [Home] [Cover + Judul Lagu + Play] [Search])
+    // Dock Bawah Mode Scroll ([Home] [Cover + Judul Lagu + Play] [Search])
     private LinearLayout buildCompactDock() {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
@@ -1129,7 +921,7 @@ public class MainActivity extends AppCompatActivity {
         applySpringTouch(searchCircle);
         searchCircle.setOnClickListener(v -> {
             switchToCompactDock(false);
-            liquidNavBar.selectTab(1, true);
+            liquidNavBar.selectTab(3, true);
         });
         row.addView(searchCircle, new LinearLayout.LayoutParams(dp(54), dp(54)));
 
@@ -1573,7 +1365,10 @@ public class MainActivity extends AppCompatActivity {
             String streamUrl = stream.url;
 
             uiHandler.post(() -> {
-                if (mediaController == null) return;
+                if (mediaController == null) {
+                    Toast.makeText(this, "MediaController belum siap", Toast.LENGTH_SHORT).show();
+                    return;
+                }
                 MediaMetadata metadata = new MediaMetadata.Builder()
                         .setTitle(song.title)
                         .setArtist(song.subtitle)
@@ -1585,6 +1380,8 @@ public class MainActivity extends AppCompatActivity {
                         .setMediaMetadata(metadata)
                         .build();
 
+                mediaController.stop();
+                mediaController.clearMediaItems();
                 mediaController.setMediaItem(item);
                 mediaController.prepare();
                 mediaController.play();
@@ -1649,9 +1446,16 @@ public class MainActivity extends AppCompatActivity {
                     public void onPlaybackStateChanged(int state) {
                         if (state == Player.STATE_ENDED) playNext();
                     }
+
+                    @Override
+                    public void onPlayerError(@NonNull PlaybackException error) {
+                        String msg = "Player Error (" + error.getErrorCodeName() + "): " + error.getMessage();
+                        miniTitle.setText("Error pemutaran");
+                        Toast.makeText(MainActivity.this, msg, Toast.LENGTH_LONG).show();
+                    }
                 });
             } catch (Exception e) {
-                e.printStackTrace();
+                Toast.makeText(this, "Init Player Gagal: " + e.getMessage(), Toast.LENGTH_LONG).show();
             }
         }, MoreExecutors.directExecutor());
     }

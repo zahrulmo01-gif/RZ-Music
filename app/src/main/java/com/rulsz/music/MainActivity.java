@@ -3,10 +3,17 @@ package com.rulsz.music;
 import android.animation.ValueAnimator;
 import android.app.AlertDialog;
 import android.content.ComponentName;
+import android.content.Context;
 import android.content.res.ColorStateList;
 import android.graphics.Bitmap;
+import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.LinearGradient;
 import android.graphics.Outline;
+import android.graphics.Paint;
+import android.graphics.RadialGradient;
+import android.graphics.RectF;
+import android.graphics.Shader;
 import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.Drawable;
@@ -82,15 +89,11 @@ public class MainActivity extends AppCompatActivity {
     private LinearLayout playlistSongsContainer;
     private TextView playlistHeaderTitle;
 
-    // Bottom Dock (Expanded vs Compact Apple Music Scroll Mode)
+    // Bottom Dock (Expanded with Draggable Liquid Glass vs Compact Scroll Mode)
     private LinearLayout expandedDock;
     private LinearLayout compactDock;
+    private LiquidGlassNavBar liquidNavBar;
     private boolean isCompactDockMode = false;
-
-    // Expanded Navigation Pill
-    private LinearLayout navHomeTab, navExploreTab, navLibraryTab;
-    private ImageView navSearchBtn;
-    private String activeTab = "HOME";
 
     // Profile & Settings
     private ImageView profileIconBtn;
@@ -102,7 +105,7 @@ public class MainActivity extends AppCompatActivity {
     private ImageView miniCover, miniPlayBtn, miniNextBtn;
     private TextView miniTitle, miniArtist;
     private ImageView compactCover, compactPlayBtn;
-    private TextView compactTitle, compactArtist;
+    private TextView compactTitle;
 
     // Full Screen Now Playing Views
     private LinearLayout fullPlayerSheet;
@@ -141,7 +144,7 @@ public class MainActivity extends AppCompatActivity {
         rootFrame.addView(feedScrollView, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
-        // Deteksi Scroll untuk mengubah Navbar ke gaya Apple Music (compact single-row pill)
+        // Deteksi Scroll untuk Morphing Navbar persis seperti di video (0:00 -> 0:02)
         feedScrollView.setOnScrollChangeListener((v, scrollX, scrollY, oldScrollX, oldScrollY) -> {
             if (scrollY > dp(45) && !isCompactDockMode) {
                 switchToCompactDock(true);
@@ -160,7 +163,7 @@ public class MainActivity extends AppCompatActivity {
         rootFrame.addView(playlistDetailOverlay, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
-        // Expanded Bottom Dock (Default)
+        // Expanded Bottom Dock (Mini Player + Draggable Liquid Glass Nav)
         expandedDock = buildExpandedDock();
         FrameLayout.LayoutParams dockParams = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -168,7 +171,7 @@ public class MainActivity extends AppCompatActivity {
         dockParams.setMargins(dp(14), 0, dp(14), dp(16));
         rootFrame.addView(expandedDock, dockParams);
 
-        // Compact Apple Music Scroll Dock ([Home] [MiniPlayer] [Search])
+        // Compact Scroll Dock ([Home] [Cover + Judul + Play] [Search])
         compactDock = buildCompactDock();
         compactDock.setVisibility(View.GONE);
         FrameLayout.LayoutParams compactParams = new FrameLayout.LayoutParams(
@@ -202,23 +205,245 @@ public class MainActivity extends AppCompatActivity {
         loadFeedTab("HOME", "FEmusic_home", "");
     }
 
+    // Custom Draggable Liquid Glass Navigation Bar (Persis seperti detik 0:03 - 0:06 di video)
+    private class LiquidGlassNavBar extends FrameLayout {
+        private final List<ImageView> tabIcons = new ArrayList<>();
+        private final GlassLensView glassLens;
+        private int selectedIndex = 0;
+        private float currentLensX = 0f;
+        private float lensScale = 1.0f;
+        private boolean isDragging = false;
+        private float downX = 0f;
+        private float startLensX = 0f;
+        private ValueAnimator snapAnimator;
+        private ValueAnimator scaleAnimator;
+
+        private final int activeNeonGreen = Color.parseColor("#22C55E");
+        private final int inactiveWhite = Color.parseColor("#E2E8F0");
+
+        public LiquidGlassNavBar(Context context, int[] iconResIds) {
+            super(context);
+            setClipChildren(false);
+            setClipToPadding(false);
+            setBackground(createGlassSurface(
+                    Color.parseColor("#EB15161B"), Color.parseColor("#38FFFFFF"), dp(34)));
+
+            // 1. Lensa Liquid Glass yang bisa digeser-geser
+            glassLens = new GlassLensView(context);
+            addView(glassLens, new LayoutParams(dp(76), dp(50)));
+
+            // 2. Baris 4 Ikon Tab (Home, Explore, Library, Settings/Create)
+            LinearLayout iconsRow = new LinearLayout(context);
+            iconsRow.setOrientation(LinearLayout.HORIZONTAL);
+            iconsRow.setGravity(Gravity.CENTER);
+
+            for (int i = 0; i < iconResIds.length; i++) {
+                FrameLayout slot = new FrameLayout(context);
+                ImageView iv = new ImageView(context);
+                iv.setImageResource(iconResIds[i]);
+                iv.setColorFilter(i == 0 ? activeNeonGreen : inactiveWhite);
+                LayoutParams ivLp = new LayoutParams(dp(24), dp(24));
+                ivLp.gravity = Gravity.CENTER;
+                slot.addView(iv, ivLp);
+                tabIcons.add(iv);
+
+                iconsRow.addView(slot, new LinearLayout.LayoutParams(0, dp(62), 1f));
+            }
+            addView(iconsRow, new LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(62)));
+        }
+
+        @Override
+        protected void onLayout(boolean changed, int left, int top, int right, int bottom) {
+            super.onLayout(changed, left, top, right, bottom);
+            if (!isDragging && getWidth() > 0 && !tabIcons.isEmpty()) {
+                float slotW = (float) getWidth() / tabIcons.size();
+                int lensW = (int) (slotW * 0.88f);
+                if (glassLens.getLayoutParams().width != lensW) {
+                    glassLens.getLayoutParams().width = lensW;
+                    glassLens.requestLayout();
+                }
+                currentLensX = getTargetXForIndex(selectedIndex);
+                glassLens.setTranslationX(currentLensX);
+                glassLens.setTranslationY((getHeight() - glassLens.getHeight()) / 2f);
+            }
+        }
+
+        private float getTargetXForIndex(int index) {
+            if (tabIcons.isEmpty()) return 0f;
+            float slotW = (float) getWidth() / tabIcons.size();
+            float lensW = glassLens.getWidth() > 0 ? glassLens.getWidth() : (slotW * 0.88f);
+            return (index * slotW) + (slotW - lensW) / 2f;
+        }
+
+        @Override
+        public boolean onInterceptTouchEvent(MotionEvent ev) {
+            return true; // Tangkap semua sentuhan & geseran secara halus
+        }
+
+        @Override
+        public boolean onTouchEvent(MotionEvent event) {
+            if (getWidth() == 0 || tabIcons.isEmpty()) return false;
+            float slotW = (float) getWidth() / tabIcons.size();
+            float maxLensX = getWidth() - glassLens.getWidth() - dp(4);
+
+            switch (event.getAction()) {
+                case MotionEvent.ACTION_DOWN:
+                    if (snapAnimator != null) snapAnimator.cancel();
+                    isDragging = true;
+                    downX = event.getX();
+                    startLensX = currentLensX;
+                    animateLensScale(1.14f); // Membesar seperti tetesan liquid glass saat disentuh
+                    return true;
+
+                case MotionEvent.ACTION_MOVE:
+                    float dx = event.getX() - downX;
+                    // Jika user hanya tap ringan di tab lain, geser ke posisi jari
+                    float rawX = Math.abs(dx) > dp(6)
+                            ? (startLensX + dx)
+                            : (event.getX() - glassLens.getWidth() / 2f);
+                    currentLensX = Math.max(dp(4), Math.min(maxLensX, rawX));
+                    glassLens.setTranslationX(currentLensX);
+                    updateIconHighlightsByLensPosition();
+                    return true;
+
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL:
+                    isDragging = false;
+                    animateLensScale(1.0f);
+                    float center = currentLensX + (glassLens.getWidth() / 2f);
+                    int targetIdx = Math.max(0, Math.min(tabIcons.size() - 1, (int) (center / slotW)));
+                    selectTab(targetIdx, true);
+                    return true;
+            }
+            return super.onTouchEvent(event);
+        }
+
+        public void selectTab(int index, boolean triggerAction) {
+            selectedIndex = index;
+            float targetX = getTargetXForIndex(index);
+            if (snapAnimator != null) snapAnimator.cancel();
+            snapAnimator = ValueAnimator.ofFloat(currentLensX, targetX);
+            snapAnimator.setDuration(320);
+            snapAnimator.setInterpolator(new OvershootInterpolator(1.35f));
+            snapAnimator.addUpdateListener(anim -> {
+                currentLensX = (float) anim.getAnimatedValue();
+                glassLens.setTranslationX(currentLensX);
+                updateIconHighlightsByLensPosition();
+            });
+            snapAnimator.start();
+
+            if (triggerAction) {
+                onNavTabSelected(index);
+            }
+        }
+
+        private void animateLensScale(float targetScale) {
+            if (scaleAnimator != null) scaleAnimator.cancel();
+            scaleAnimator = ValueAnimator.ofFloat(lensScale, targetScale);
+            scaleAnimator.setDuration(180);
+            scaleAnimator.addUpdateListener(anim -> {
+                lensScale = (float) anim.getAnimatedValue();
+                glassLens.setScaleX(lensScale);
+                glassLens.setScaleY(lensScale);
+            });
+            scaleAnimator.start();
+        }
+
+        private void updateIconHighlightsByLensPosition() {
+            float lensCenter = currentLensX + glassLens.getWidth() / 2f;
+            float slotW = (float) getWidth() / tabIcons.size();
+            for (int i = 0; i < tabIcons.size(); i++) {
+                float iconCenter = (i + 0.5f) * slotW;
+                float dist = Math.abs(lensCenter - iconCenter);
+                if (dist < slotW * 0.45f) {
+                    tabIcons.get(i).setColorFilter(activeNeonGreen);
+                    tabIcons.get(i).setScaleX(1.08f);
+                    tabIcons.get(i).setScaleY(1.08f);
+                } else {
+                    tabIcons.get(i).setColorFilter(inactiveWhite);
+                    tabIcons.get(i).setScaleX(1.0f);
+                    tabIcons.get(i).setScaleY(1.0f);
+                }
+            }
+        }
+    }
+
+    // Custom Canvas View untuk Efek Refraksi Liquid Glass (Specular Rim + Inner Glow)
+    private class GlassLensView extends View {
+        private final Paint fillPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint glowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint rimPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final RectF rect = new RectF();
+
+        public GlassLensView(Context context) {
+            super(context);
+            rimPaint.setStyle(Paint.Style.STROKE);
+            rimPaint.setStrokeWidth(dp(1.4f));
+        }
+
+        @Override
+        protected void onDraw(Canvas canvas) {
+            super.onDraw(canvas);
+            float w = getWidth();
+            float h = getHeight();
+            float r = h / 2f;
+            rect.set(dp(1), dp(1), w - dp(1), h - dp(1));
+
+            // 1. Pendaran cairan hijau/kaca halus di bagian bawah lensa
+            glowPaint.setShader(new RadialGradient(
+                    w * 0.5f, h * 0.85f, w * 0.65f,
+                    new int[]{Color.parseColor("#3822C55E"), Color.parseColor("#18FFFFFF"), Color.TRANSPARENT},
+                    null, Shader.TileMode.CLAMP));
+            canvas.drawRoundRect(rect, r, r, glowPaint);
+
+            // 2. Permukaan kaca translucent
+            fillPaint.setShader(new LinearGradient(
+                    0, 0, 0, h,
+                    Color.parseColor("#2EFFFFFF"), Color.parseColor("#12FFFFFF"), Shader.TileMode.CLAMP));
+            canvas.drawRoundRect(rect, r, r, fillPaint);
+
+            // 3. Specular Refractive Border (cahaya putih tajam di atas & bawah kapsul)
+            rimPaint.setShader(new LinearGradient(
+                    0, 0, 0, h,
+                    new int[]{Color.parseColor("#AAFFFFFF"), Color.parseColor("#22FFFFFF"), Color.parseColor("#77FFFFFF")},
+                    null, Shader.TileMode.CLAMP));
+            canvas.drawRoundRect(rect, r, r, rimPaint);
+        }
+    }
+
+    private void onNavTabSelected(int index) {
+        if (index == 0) {
+            loadFeedTab("HOME", "FEmusic_home", "");
+        } else if (index == 1) {
+            playlistDetailOverlay.setVisibility(View.GONE);
+            searchOverlay.setVisibility(View.VISIBLE);
+        } else if (index == 2) {
+            loadFeedTab("LIBRARY", "FEmusic_liked_playlists", "");
+        } else if (index == 3) {
+            loadFeedTab("EXPLORE", "FEmusic_explore", "");
+        }
+    }
+
     private void switchToCompactDock(boolean compact) {
         isCompactDockMode = compact;
         if (compact) {
             compactDock.setVisibility(View.VISIBLE);
             compactDock.setAlpha(0f);
-            compactDock.setTranslationY(dp(20));
-            compactDock.animate().alpha(1f).translationY(0).setDuration(240).start();
+            compactDock.setScaleX(0.92f);
+            compactDock.setScaleY(0.92f);
+            compactDock.animate().alpha(1f).scaleX(1f).scaleY(1f)
+                    .setDuration(260).setInterpolator(new OvershootInterpolator(1.1f)).start();
 
-            expandedDock.animate().alpha(0f).translationY(dp(20)).setDuration(180)
+            expandedDock.animate().alpha(0f).translationY(dp(24)).setDuration(180)
                     .withEndAction(() -> expandedDock.setVisibility(View.GONE)).start();
         } else {
             expandedDock.setVisibility(View.VISIBLE);
             expandedDock.setAlpha(0f);
-            expandedDock.setTranslationY(dp(20));
-            expandedDock.animate().alpha(1f).translationY(0).setDuration(240).start();
+            expandedDock.setTranslationY(dp(24));
+            expandedDock.animate().alpha(1f).translationY(0)
+                    .setDuration(260).setInterpolator(new OvershootInterpolator(1.1f)).start();
 
-            compactDock.animate().alpha(0f).translationY(dp(20)).setDuration(180)
+            compactDock.animate().alpha(0f).scaleX(0.92f).scaleY(0.92f).setDuration(180)
                     .withEndAction(() -> compactDock.setVisibility(View.GONE)).start();
         }
     }
@@ -235,12 +460,11 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private String getDynamicGreeting() {
-        String name = YouTubeMusicClient.isLoggedIn() ? "RZ" : "RZ";
         int hour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY);
-        if (hour >= 0 && hour < 5) return "Up late, " + name;
-        if (hour < 12) return "Good morning, " + name;
-        if (hour < 18) return "Good afternoon, " + name;
-        return "Good evening, " + name;
+        if (hour >= 0 && hour < 5) return "Up late, RZ";
+        if (hour < 12) return "Good morning, RZ";
+        if (hour < 18) return "Good afternoon, RZ";
+        return "Good evening, RZ";
     }
 
     private void buildFeedHeader(String subtitleHeader) {
@@ -256,7 +480,6 @@ public class MainActivity extends AppCompatActivity {
         logoHolder.addView(waveLogo);
         logoHolder.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
-        // Avatar Profil Lingkaran Kanan Atas
         profileIconBtn = new ImageView(this);
         profileIconBtn.setScaleType(ImageView.ScaleType.CENTER_CROP);
         roundView(profileIconBtn, dp(22));
@@ -278,8 +501,6 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void loadFeedTab(String tabName, String browseId, String params) {
-        activeTab = tabName;
-        updateNavPillStyles();
         searchOverlay.setVisibility(View.GONE);
         playlistDetailOverlay.setVisibility(View.GONE);
         feedScrollView.setVisibility(View.VISIBLE);
@@ -370,7 +591,6 @@ public class MainActivity extends AppCompatActivity {
         feedContainer.addView(headerRow);
     }
 
-    // Kartu "Find Your Mood" warna-warni gradien dengan logo gelombang di kanan atas (seperti gambar 2)
     private void addMoodCardsRow(List<YouTubeMusicClient.Song> items) {
         HorizontalScrollView hsv = new HorizontalScrollView(this);
         hsv.setHorizontalScrollBarEnabled(false);
@@ -398,14 +618,12 @@ public class MainActivity extends AppCompatActivity {
             bg.setCornerRadius(dp(18));
             card.setBackground(bg);
 
-            // Logo Gelombang Putih di Kanan Atas Kartu Mood
             ImageView cornerWave = createSvgIcon(R.drawable.ic_convx_logo, 20, Color.WHITE);
             FrameLayout.LayoutParams waveLp = new FrameLayout.LayoutParams(dp(20), dp(20));
             waveLp.gravity = Gravity.TOP | Gravity.END;
             waveLp.setMargins(0, dp(12), dp(12), 0);
             card.addView(cornerWave, waveLp);
 
-            // Nama Mood di Kiri Bawah
             TextView moodLabel = new TextView(this);
             moodLabel.setText(mood.title);
             moodLabel.setTextColor(Color.WHITE);
@@ -775,10 +993,11 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
-    // Dock Bawah Mode Normal (Expanded)
+    // Dock Bawah Mode Normal (Mini Player + Draggable Liquid Glass NavBar)
     private LinearLayout buildExpandedDock() {
         LinearLayout dock = new LinearLayout(this);
         dock.setOrientation(LinearLayout.VERTICAL);
+        dock.setClipChildren(false);
 
         LinearLayout miniPlayerCard = new LinearLayout(this);
         miniPlayerCard.setOrientation(LinearLayout.HORIZONTAL);
@@ -834,52 +1053,20 @@ public class MainActivity extends AppCompatActivity {
         miniLp.setMargins(0, 0, 0, dp(10));
         dock.addView(miniPlayerCard, miniLp);
 
-        LinearLayout navRow = new LinearLayout(this);
-        navRow.setOrientation(LinearLayout.HORIZONTAL);
-        navRow.setGravity(Gravity.CENTER_VERTICAL);
-
-        LinearLayout pillGroup = new LinearLayout(this);
-        pillGroup.setOrientation(LinearLayout.HORIZONTAL);
-        pillGroup.setPadding(dp(6), dp(6), dp(6), dp(6));
-        pillGroup.setBackground(createGlassSurface(
-                Color.parseColor("#EB16171C"), Color.parseColor("#44FFFFFF"), dp(32)));
-
-        navHomeTab = createNavTabItem(R.drawable.ic_home, "Home");
-        navExploreTab = createNavTabItem(R.drawable.ic_explore, "Explore");
-        navLibraryTab = createNavTabItem(R.drawable.ic_library, "Library");
-
-        navHomeTab.setOnClickListener(v -> loadFeedTab("HOME", "FEmusic_home", ""));
-        navExploreTab.setOnClickListener(v -> loadFeedTab("EXPLORE", "FEmusic_explore", ""));
-        navLibraryTab.setOnClickListener(v -> loadFeedTab("LIBRARY", "FEmusic_liked_playlists", ""));
-
-        pillGroup.addView(navHomeTab, new LinearLayout.LayoutParams(0, dp(48), 1f));
-        pillGroup.addView(navExploreTab, new LinearLayout.LayoutParams(0, dp(48), 1f));
-        pillGroup.addView(navLibraryTab, new LinearLayout.LayoutParams(0, dp(48), 1f));
-
-        LinearLayout.LayoutParams pillLp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
-        pillLp.setMargins(0, 0, dp(10), 0);
-        navRow.addView(pillGroup, pillLp);
-
-        navSearchBtn = new ImageView(this);
-        navSearchBtn.setImageResource(R.drawable.ic_search);
-        navSearchBtn.setColorFilter(Color.WHITE);
-        navSearchBtn.setPadding(dp(17), dp(17), dp(17), dp(17));
-        navSearchBtn.setBackground(createGlassSurface(
-                Color.parseColor("#EB16171C"), Color.parseColor("#44FFFFFF"), dp(30)));
-        applySpringTouch(navSearchBtn);
-        navSearchBtn.setOnClickListener(v -> {
-            activeTab = "SEARCH";
-            updateNavPillStyles();
-            playlistDetailOverlay.setVisibility(View.GONE);
-            searchOverlay.setVisibility(View.VISIBLE);
+        // Draggable Liquid Glass Navigation Pill (4 Tab: Home, Search, Library, Explore)
+        liquidNavBar = new LiquidGlassNavBar(this, new int[]{
+                R.drawable.ic_home,
+                R.drawable.ic_search,
+                R.drawable.ic_library,
+                R.drawable.ic_explore
         });
-        navRow.addView(navSearchBtn, new LinearLayout.LayoutParams(dp(60), dp(60)));
+        dock.addView(liquidNavBar, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(62)));
 
-        dock.addView(navRow);
         return dock;
     }
 
-    // Dock Bawah Mode Scroll (Gaya Apple Music seperti gambar 2: [Home] [MiniPlayer Pill] [Search])
+    // Dock Bawah Mode Scroll (Persis detik 0:02 di video: [Home] [Cover + Judul Lagu + Play] [Search])
     private LinearLayout buildCompactDock() {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
@@ -887,54 +1074,40 @@ public class MainActivity extends AppCompatActivity {
 
         ImageView homeCircle = new ImageView(this);
         homeCircle.setImageResource(R.drawable.ic_home);
-        homeCircle.setColorFilter(Color.WHITE);
+        homeCircle.setColorFilter(Color.parseColor("#22C55E"));
         homeCircle.setPadding(dp(15), dp(15), dp(15), dp(15));
         homeCircle.setBackground(createGlassSurface(
-                Color.parseColor("#E616171C"), Color.parseColor("#4DFFFFFF"), dp(27)));
+                Color.parseColor("#EB15161B"), Color.parseColor("#4DFFFFFF"), dp(27)));
         applySpringTouch(homeCircle);
         homeCircle.setOnClickListener(v -> {
             feedScrollView.smoothScrollTo(0, 0);
-            if (!activeTab.equals("HOME")) loadFeedTab("HOME", "FEmusic_home", "");
+            liquidNavBar.selectTab(0, true);
         });
         row.addView(homeCircle, new LinearLayout.LayoutParams(dp(54), dp(54)));
 
-        // Kapsul Mini Player di Tengah
         LinearLayout centerPill = new LinearLayout(this);
         centerPill.setOrientation(LinearLayout.HORIZONTAL);
         centerPill.setGravity(Gravity.CENTER_VERTICAL);
         centerPill.setPadding(dp(8), dp(6), dp(12), dp(6));
         centerPill.setBackground(createGlassSurface(
-                Color.parseColor("#E616171C"), Color.parseColor("#4DFFFFFF"), dp(27)));
+                Color.parseColor("#EB15161B"), Color.parseColor("#4DFFFFFF"), dp(27)));
         applySpringTouch(centerPill);
 
         compactCover = new ImageView(this);
         compactCover.setScaleType(ImageView.ScaleType.CENTER_CROP);
         compactCover.setBackgroundColor(Color.parseColor("#2A303C"));
-        roundView(compactCover, dp(10));
+        roundView(compactCover, dp(19));
         centerPill.addView(compactCover, new LinearLayout.LayoutParams(dp(38), dp(38)));
-
-        LinearLayout info = new LinearLayout(this);
-        info.setOrientation(LinearLayout.VERTICAL);
-        info.setPadding(dp(10), 0, dp(6), 0);
 
         compactTitle = new TextView(this);
         compactTitle.setText("Pilih lagu");
         compactTitle.setTextColor(Color.WHITE);
-        compactTitle.setTextSize(13);
+        compactTitle.setTextSize(14);
         compactTitle.setTypeface(null, Typeface.BOLD);
         compactTitle.setSingleLine(true);
         compactTitle.setEllipsize(TextUtils.TruncateAt.END);
-
-        compactArtist = new TextView(this);
-        compactArtist.setText("YouTube Music");
-        compactArtist.setTextColor(Color.parseColor("#94A3B8"));
-        compactArtist.setTextSize(11);
-        compactArtist.setSingleLine(true);
-        compactArtist.setEllipsize(TextUtils.TruncateAt.END);
-
-        info.addView(compactTitle);
-        info.addView(compactArtist);
-        centerPill.addView(info, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        compactTitle.setPadding(dp(10), 0, dp(6), 0);
+        centerPill.addView(compactTitle, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
         compactPlayBtn = createSvgIcon(R.drawable.ic_play, 24, Color.WHITE);
         compactPlayBtn.setPadding(dp(4), dp(4), dp(4), dp(4));
@@ -951,46 +1124,15 @@ public class MainActivity extends AppCompatActivity {
         searchCircle.setColorFilter(Color.WHITE);
         searchCircle.setPadding(dp(15), dp(15), dp(15), dp(15));
         searchCircle.setBackground(createGlassSurface(
-                Color.parseColor("#E616171C"), Color.parseColor("#4DFFFFFF"), dp(27)));
+                Color.parseColor("#EB15161B"), Color.parseColor("#4DFFFFFF"), dp(27)));
         applySpringTouch(searchCircle);
         searchCircle.setOnClickListener(v -> {
             switchToCompactDock(false);
-            activeTab = "SEARCH";
-            updateNavPillStyles();
-            playlistDetailOverlay.setVisibility(View.GONE);
-            searchOverlay.setVisibility(View.VISIBLE);
+            liquidNavBar.selectTab(1, true);
         });
         row.addView(searchCircle, new LinearLayout.LayoutParams(dp(54), dp(54)));
 
         return row;
-    }
-
-    private LinearLayout createNavTabItem(int iconResId, String label) {
-        LinearLayout tab = new LinearLayout(this);
-        tab.setOrientation(LinearLayout.VERTICAL);
-        tab.setGravity(Gravity.CENTER);
-
-        ImageView iv = createSvgIcon(iconResId, 20, Color.WHITE);
-        TextView tv = new TextView(this);
-        tv.setText(label);
-        tv.setTextColor(Color.WHITE);
-        tv.setTextSize(10);
-        tv.setGravity(Gravity.CENTER);
-        tv.setPadding(0, dp(2), 0, 0);
-
-        tab.addView(iv);
-        tab.addView(tv);
-        return tab;
-    }
-
-    private void updateNavPillStyles() {
-        Drawable activePill = createGlassSurface(Color.parseColor("#33FFFFFF"), Color.parseColor("#55FFFFFF"), dp(24));
-        navHomeTab.setBackground(activeTab.equals("HOME") ? activePill : null);
-        navExploreTab.setBackground(activeTab.equals("EXPLORE") ? activePill : null);
-        navLibraryTab.setBackground(activeTab.equals("LIBRARY") ? activePill : null);
-        navSearchBtn.setBackground(createGlassSurface(
-                activeTab.equals("SEARCH") ? Color.parseColor("#3DFFFFFF") : Color.parseColor("#EB16171C"),
-                Color.parseColor("#44FFFFFF"), dp(30)));
     }
 
     private LinearLayout buildSettingsSheet() {
@@ -1395,7 +1537,6 @@ public class MainActivity extends AppCompatActivity {
         miniTitle.setText("Memuat: " + song.title);
         miniArtist.setText(song.subtitle);
         compactTitle.setText(song.title);
-        compactArtist.setText(song.subtitle);
         fullTitle.setText(song.title);
         fullArtist.setText(song.subtitle);
 
@@ -1606,7 +1747,7 @@ public class MainActivity extends AppCompatActivity {
         } else if (playlistDetailOverlay.getVisibility() == View.VISIBLE) {
             playlistDetailOverlay.setVisibility(View.GONE);
         } else if (searchOverlay.getVisibility() == View.VISIBLE) {
-            loadFeedTab("HOME", "FEmusic_home", "");
+            liquidNavBar.selectTab(0, true);
         } else {
             super.onBackPressed();
         }

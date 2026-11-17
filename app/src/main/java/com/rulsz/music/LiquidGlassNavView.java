@@ -9,9 +9,8 @@ import android.graphics.LinearGradient;
 import android.graphics.Paint;
 import android.graphics.RadialGradient;
 import android.graphics.RectF;
-import android.graphics.RenderEffect;
+import android.graphics.Typeface;
 import android.graphics.Shader;
-import android.os.Build;
 import android.view.Gravity;
 import android.view.HapticFeedbackConstants;
 import android.view.MotionEvent;
@@ -53,24 +52,21 @@ public class LiquidGlassNavView extends FrameLayout {
     private ValueAnimator morphAnimator;
     private OnTabSelectedListener listener;
 
-    private final int activeColor = Color.parseColor("#22C55E");   // Aksen aktif Sonara
-    private final int inactiveColor = Color.parseColor("#E2E8F0"); // Putih kaca
+    private final int activeColor = Color.WHITE;
+    private final int inactiveColor = Color.parseColor("#8CFFFFFF");
 
     public LiquidGlassNavView(Context context, int[] iconResIds, String[] titles) {
         super(context);
         setClipChildren(false);
         setClipToPadding(false);
 
-        // 1. Latar Belakang Kapsul Frosted Liquid Glass
         trackBackground = new GlassTrackBackground(context);
         addView(trackBackground, new LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
-        // 2. Lensa Tetesan Kaca Cair (Droplet Lens) yang bisa digeser-geser
         dropletLens = new LiquidDropletLens(context);
-        addView(dropletLens, new LayoutParams(dp(82), dp(52)));
+        addView(dropletLens, new LayoutParams(dp(80), dp(48)));
 
-        // 3. Baris Slot Ikon + Label
         LinearLayout row = new LinearLayout(context);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
@@ -84,12 +80,12 @@ public class LiquidGlassNavView extends FrameLayout {
             ImageView icon = new ImageView(context);
             icon.setImageResource(iconResIds[i]);
             icon.setColorFilter(i == 0 ? activeColor : inactiveColor);
-            LinearLayout.LayoutParams iconLp = new LinearLayout.LayoutParams(dp(22), dp(22));
-            slot.addView(icon, iconLp);
+            slot.addView(icon, new LinearLayout.LayoutParams(dp(22), dp(22)));
 
             TextView label = new TextView(context);
             label.setText(titles[i]);
-            label.setTextSize(10f);
+            label.setTextSize(10.5f);
+            label.setTypeface(null, Typeface.BOLD);
             label.setTextColor(i == 0 ? activeColor : inactiveColor);
             label.setGravity(Gravity.CENTER);
             label.setPadding(0, dp(2), 0, 0);
@@ -116,7 +112,7 @@ public class LiquidGlassNavView extends FrameLayout {
         if (getWidth() > 0 && !tabSlots.isEmpty()) {
             float innerW = getWidth() - dp(12);
             float slotW = innerW / tabSlots.size();
-            int targetLensW = (int) (slotW * 0.92f);
+            int targetLensW = (int) (slotW * 0.94f);
             int targetLensH = getHeight() - dp(10);
 
             if (dropletLens.getLayoutParams().width != targetLensW || dropletLens.getLayoutParams().height != targetLensH) {
@@ -158,8 +154,7 @@ public class LiquidGlassNavView extends FrameLayout {
                 isDragging = true;
                 touchDownX = event.getX();
                 dragStartCenterX = lensCenterX;
-                // Efek tetesan cairan memuai saat disentuh (Sonara stretch physics)
-                animateDropletMorph(1.16f, 1.12f);
+                animateDropletMorph(1.15f, 1.12f);
                 performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
                 return true;
 
@@ -207,7 +202,7 @@ public class LiquidGlassNavView extends FrameLayout {
         float targetCenter = getSlotCenterX(index);
         if (snapAnimator != null) snapAnimator.cancel();
         snapAnimator = ValueAnimator.ofFloat(lensCenterX, targetCenter);
-        snapAnimator.setDuration(340);
+        snapAnimator.setDuration(320);
         snapAnimator.setInterpolator(new OvershootInterpolator(1.25f));
         snapAnimator.addUpdateListener(anim -> {
             lensCenterX = (float) anim.getAnimatedValue();
@@ -226,8 +221,8 @@ public class LiquidGlassNavView extends FrameLayout {
         float startSX = lensScaleX;
         float startSY = lensScaleY;
         morphAnimator = ValueAnimator.ofFloat(0f, 1f);
-        morphAnimator.setDuration(200);
-        morphAnimator.setInterpolator(new OvershootInterpolator(1.4f));
+        morphAnimator.setDuration(180);
+        morphAnimator.setInterpolator(new OvershootInterpolator(1.35f));
         morphAnimator.addUpdateListener(anim -> {
             float t = (float) anim.getAnimatedValue();
             lensScaleX = startSX + (targetSX - startSX) * t;
@@ -238,8 +233,8 @@ public class LiquidGlassNavView extends FrameLayout {
     }
 
     private void applyLensTransform() {
-        float lensW = dropletLens.getWidth() > 0 ? dropletLens.getWidth() : dp(82);
-        float lensH = dropletLens.getHeight() > 0 ? dropletLens.getHeight() : dp(52);
+        float lensW = dropletLens.getWidth() > 0 ? dropletLens.getWidth() : dp(80);
+        float lensH = dropletLens.getHeight() > 0 ? dropletLens.getHeight() : dp(48);
         dropletLens.setTranslationX(lensCenterX - (lensW / 2f));
         dropletLens.setTranslationY((getHeight() - lensH) / 2f);
         dropletLens.setScaleX(lensScaleX);
@@ -247,7 +242,6 @@ public class LiquidGlassNavView extends FrameLayout {
         dropletLens.invalidate();
     }
 
-    // Interpolasi warna & pembesaran magnetik ikon saat lensa kaca melintas di atasnya
     private void updateMagneticIcons() {
         if (getWidth() == 0) return;
         float innerW = getWidth() - dp(12);
@@ -256,10 +250,10 @@ public class LiquidGlassNavView extends FrameLayout {
         for (int i = 0; i < tabSlots.size(); i++) {
             float slotCenter = getSlotCenterX(i);
             float distance = Math.abs(lensCenterX - slotCenter);
-            float proximity = Math.max(0f, 1f - (distance / (slotW * 0.75f)));
+            float proximity = Math.max(0f, 1f - (distance / (slotW * 0.72f)));
 
             int blendedColor = (int) colorEvaluator.evaluate(proximity, inactiveColor, activeColor);
-            float iconScale = 1.0f + (0.14f * proximity);
+            float iconScale = 1.0f + (0.12f * proximity);
 
             tabIcons.get(i).setColorFilter(blendedColor);
             tabLabels.get(i).setTextColor(blendedColor);
@@ -276,7 +270,6 @@ public class LiquidGlassNavView extends FrameLayout {
         return v * getResources().getDisplayMetrics().density;
     }
 
-    // Latar Kapsul Kaca (Dark Translucent + Specular Edge Rim)
     private class GlassTrackBackground extends View {
         private final Paint fillPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint topHighlightPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -298,19 +291,19 @@ public class LiquidGlassNavView extends FrameLayout {
 
             fillPaint.setShader(new LinearGradient(
                     0, 0, 0, h,
-                    Color.parseColor("#E6181920"), Color.parseColor("#F20F1014"),
+                    Color.parseColor("#EB18191F"), Color.parseColor("#F5111216"),
                     Shader.TileMode.CLAMP));
             canvas.drawRoundRect(rect, r, r, fillPaint);
 
             topHighlightPaint.setShader(new LinearGradient(
                     0, 0, 0, h,
-                    new int[]{Color.parseColor("#59FFFFFF"), Color.parseColor("#14FFFFFF"), Color.parseColor("#33FFFFFF")},
+                    new int[]{Color.parseColor("#55FFFFFF"), Color.parseColor("#14FFFFFF"), Color.parseColor("#33FFFFFF")},
                     null, Shader.TileMode.CLAMP));
             canvas.drawRoundRect(rect, r, r, topHighlightPaint);
         }
     }
 
-    // Lensa Tetesan Liquid Glass (Refractive Rim + Chromatic Bottom Glow)
+    // Lensa Kristal Liquid Glass (Putih-Translucent + Refraksi Cahaya Tepi)
     private class LiquidDropletLens extends View {
         private final Paint bodyPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint glowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -320,10 +313,7 @@ public class LiquidGlassNavView extends FrameLayout {
         public LiquidDropletLens(Context context) {
             super(context);
             specularRimPaint.setStyle(Paint.Style.STROKE);
-            specularRimPaint.setStrokeWidth(dpf(1.4f));
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                setRenderEffect(RenderEffect.createBlurEffect(0.5f, 0.5f, Shader.TileMode.CLAMP));
-            }
+            specularRimPaint.setStrokeWidth(dpf(1.3f));
         }
 
         @Override
@@ -334,24 +324,21 @@ public class LiquidGlassNavView extends FrameLayout {
             float r = h / 2f;
             rect.set(dpf(1f), dpf(1f), w - dpf(1f), h - dpf(1f));
 
-            // 1. Pendaran cairan hijau di dasar lensa
             glowPaint.setShader(new RadialGradient(
-                    w * 0.5f, h * 0.9f, w * 0.65f,
-                    new int[]{Color.parseColor("#4422C55E"), Color.parseColor("#1822C55E"), Color.TRANSPARENT},
+                    w * 0.5f, h * 0.85f, w * 0.65f,
+                    new int[]{Color.parseColor("#38FFFFFF"), Color.parseColor("#12FFFFFF"), Color.TRANSPARENT},
                     null, Shader.TileMode.CLAMP));
             canvas.drawRoundRect(rect, r, r, glowPaint);
 
-            // 2. Permukaan kaca cembung transparan
             bodyPaint.setShader(new LinearGradient(
                     0, 0, 0, h,
-                    new int[]{Color.parseColor("#38FFFFFF"), Color.parseColor("#14FFFFFF"), Color.parseColor("#24FFFFFF")},
+                    new int[]{Color.parseColor("#42FFFFFF"), Color.parseColor("#24FFFFFF"), Color.parseColor("#30FFFFFF")},
                     null, Shader.TileMode.CLAMP));
             canvas.drawRoundRect(rect, r, r, bodyPaint);
 
-            // 3. Garis refraksi cahaya putih tajam di keliling lensa
             specularRimPaint.setShader(new LinearGradient(
                     0, 0, 0, h,
-                    new int[]{Color.parseColor("#CCFFFFFF"), Color.parseColor("#26FFFFFF"), Color.parseColor("#88FFFFFF")},
+                    new int[]{Color.parseColor("#CCFFFFFF"), Color.parseColor("#28FFFFFF"), Color.parseColor("#80FFFFFF")},
                     null, Shader.TileMode.CLAMP));
             canvas.drawRoundRect(rect, r, r, specularRimPaint);
         }

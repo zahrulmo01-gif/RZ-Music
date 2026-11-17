@@ -82,7 +82,12 @@ public class MainActivity extends AppCompatActivity {
     private LinearLayout playlistSongsContainer;
     private TextView playlistHeaderTitle;
 
-    // Bottom Navigation Pill (SVG XML Icons)
+    // Bottom Dock (Expanded vs Compact Apple Music Scroll Mode)
+    private LinearLayout expandedDock;
+    private LinearLayout compactDock;
+    private boolean isCompactDockMode = false;
+
+    // Expanded Navigation Pill
     private LinearLayout navHomeTab, navExploreTab, navLibraryTab;
     private ImageView navSearchBtn;
     private String activeTab = "HOME";
@@ -93,10 +98,11 @@ public class MainActivity extends AppCompatActivity {
     private TextView accountStatusText;
     private TextView logoutRowBtn;
 
-    // Mini Player Views
-    private LinearLayout miniPlayerCard;
+    // Mini Player Views (Expanded & Compact)
     private ImageView miniCover, miniPlayBtn, miniNextBtn;
     private TextView miniTitle, miniArtist;
+    private ImageView compactCover, compactPlayBtn;
+    private TextView compactTitle, compactArtist;
 
     // Full Screen Now Playing Views
     private LinearLayout fullPlayerSheet;
@@ -135,6 +141,15 @@ public class MainActivity extends AppCompatActivity {
         rootFrame.addView(feedScrollView, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
+        // Deteksi Scroll untuk mengubah Navbar ke gaya Apple Music (compact single-row pill)
+        feedScrollView.setOnScrollChangeListener((v, scrollX, scrollY, oldScrollX, oldScrollY) -> {
+            if (scrollY > dp(45) && !isCompactDockMode) {
+                switchToCompactDock(true);
+            } else if (scrollY <= dp(30) && isCompactDockMode) {
+                switchToCompactDock(false);
+            }
+        });
+
         searchOverlay = buildSearchOverlay();
         searchOverlay.setVisibility(View.GONE);
         rootFrame.addView(searchOverlay, new FrameLayout.LayoutParams(
@@ -145,12 +160,22 @@ public class MainActivity extends AppCompatActivity {
         rootFrame.addView(playlistDetailOverlay, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
-        LinearLayout bottomDock = buildBottomDock();
+        // Expanded Bottom Dock (Default)
+        expandedDock = buildExpandedDock();
         FrameLayout.LayoutParams dockParams = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         dockParams.gravity = Gravity.BOTTOM;
         dockParams.setMargins(dp(14), 0, dp(14), dp(16));
-        rootFrame.addView(bottomDock, dockParams);
+        rootFrame.addView(expandedDock, dockParams);
+
+        // Compact Apple Music Scroll Dock ([Home] [MiniPlayer] [Search])
+        compactDock = buildCompactDock();
+        compactDock.setVisibility(View.GONE);
+        FrameLayout.LayoutParams compactParams = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        compactParams.gravity = Gravity.BOTTOM;
+        compactParams.setMargins(dp(14), 0, dp(14), dp(16));
+        rootFrame.addView(compactDock, compactParams);
 
         settingsSheet = buildSettingsSheet();
         settingsSheet.setVisibility(View.GONE);
@@ -167,7 +192,35 @@ public class MainActivity extends AppCompatActivity {
         initMediaController();
         startProgressUpdater();
 
-        loadFeedTab("HOME", "FEmusic_home");
+        if (YouTubeMusicClient.isLoggedIn()) {
+            executor.execute(() -> {
+                YouTubeMusicClient.fetchAccountProfile(this);
+                uiHandler.post(this::refreshAccountState);
+            });
+        }
+
+        loadFeedTab("HOME", "FEmusic_home", "");
+    }
+
+    private void switchToCompactDock(boolean compact) {
+        isCompactDockMode = compact;
+        if (compact) {
+            compactDock.setVisibility(View.VISIBLE);
+            compactDock.setAlpha(0f);
+            compactDock.setTranslationY(dp(20));
+            compactDock.animate().alpha(1f).translationY(0).setDuration(240).start();
+
+            expandedDock.animate().alpha(0f).translationY(dp(20)).setDuration(180)
+                    .withEndAction(() -> expandedDock.setVisibility(View.GONE)).start();
+        } else {
+            expandedDock.setVisibility(View.VISIBLE);
+            expandedDock.setAlpha(0f);
+            expandedDock.setTranslationY(dp(20));
+            expandedDock.animate().alpha(1f).translationY(0).setDuration(240).start();
+
+            compactDock.animate().alpha(0f).translationY(dp(20)).setDuration(180)
+                    .withEndAction(() -> compactDock.setVisibility(View.GONE)).start();
+        }
     }
 
     private ImageView createSvgIcon(int resId, int sizeDp, int tintColor) {
@@ -182,11 +235,12 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private String getDynamicGreeting() {
+        String name = YouTubeMusicClient.isLoggedIn() ? "RZ" : "RZ";
         int hour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY);
-        if (hour >= 0 && hour < 5) return "Up late, RZ";
-        if (hour < 12) return "Good morning, RZ";
-        if (hour < 18) return "Good afternoon, RZ";
-        return "Good evening, RZ";
+        if (hour >= 0 && hour < 5) return "Up late, " + name;
+        if (hour < 12) return "Good morning, " + name;
+        if (hour < 18) return "Good afternoon, " + name;
+        return "Good evening, " + name;
     }
 
     private void buildFeedHeader(String subtitleHeader) {
@@ -202,15 +256,15 @@ public class MainActivity extends AppCompatActivity {
         logoHolder.addView(waveLogo);
         logoHolder.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
+        // Avatar Profil Lingkaran Kanan Atas
         profileIconBtn = new ImageView(this);
-        profileIconBtn.setImageResource(R.drawable.ic_profile);
-        profileIconBtn.setColorFilter(Color.WHITE);
-        profileIconBtn.setPadding(dp(10), dp(10), dp(10), dp(10));
+        profileIconBtn.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        roundView(profileIconBtn, dp(22));
         applySpringTouch(profileIconBtn);
         profileIconBtn.setOnClickListener(v -> openSettings());
 
         topIcons.addView(logoHolder);
-        topIcons.addView(profileIconBtn, new LinearLayout.LayoutParams(dp(42), dp(42)));
+        topIcons.addView(profileIconBtn, new LinearLayout.LayoutParams(dp(44), dp(44)));
         feedContainer.addView(topIcons);
         refreshAccountState();
 
@@ -223,27 +277,28 @@ public class MainActivity extends AppCompatActivity {
         feedContainer.addView(bigTitle);
     }
 
-    private void loadFeedTab(String tabName, String browseId) {
+    private void loadFeedTab(String tabName, String browseId, String params) {
         activeTab = tabName;
         updateNavPillStyles();
         searchOverlay.setVisibility(View.GONE);
         playlistDetailOverlay.setVisibility(View.GONE);
         feedScrollView.setVisibility(View.VISIBLE);
         feedScrollView.scrollTo(0, 0);
+        if (isCompactDockMode) switchToCompactDock(false);
 
         String headerTitle = tabName.equals("HOME") ? getDynamicGreeting()
                 : (tabName.equals("EXPLORE") ? "Explore" : "Library");
         buildFeedHeader(headerTitle);
 
         TextView loadingTv = new TextView(this);
-        loadingTv.setText("Memuat data dari YouTube Music...");
+        loadingTv.setText("Memuat katalog YouTube Music...");
         loadingTv.setTextColor(Color.parseColor("#94A3B8"));
         loadingTv.setTextSize(14);
         feedContainer.addView(loadingTv);
 
         executor.execute(() -> {
             try {
-                List<YouTubeMusicClient.HomeSection> sections = YouTubeMusicClient.getBrowseSections(browseId);
+                List<YouTubeMusicClient.HomeSection> sections = YouTubeMusicClient.getBrowseSections(browseId, params);
                 uiHandler.post(() -> {
                     feedContainer.removeView(loadingTv);
                     if (sections.isEmpty()) {
@@ -256,9 +311,12 @@ public class MainActivity extends AppCompatActivity {
 
                     for (int sIdx = 0; sIdx < sections.size(); sIdx++) {
                         YouTubeMusicClient.HomeSection sec = sections.get(sIdx);
-                        addSectionHeader(sec.strapline, sec.title);
+                        boolean isMoodSection = !sec.items.isEmpty() && sec.items.get(0).isMood;
+                        addSectionHeader(sec.strapline, sec.title, isMoodSection || sec.items.size() > 4);
 
-                        if (tabName.equals("HOME") && sIdx == 0) {
+                        if (isMoodSection) {
+                            addMoodCardsRow(sec.items);
+                        } else if (tabName.equals("HOME") && sIdx == 0) {
                             addHeroCardsRow(sec.items);
                         } else if (tabName.equals("HOME") && sIdx == 1) {
                             addStackedSongGrid(sec.items);
@@ -273,7 +331,7 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
-    private void addSectionHeader(String strapline, String title) {
+    private void addSectionHeader(String strapline, String title, boolean showSeeAll) {
         if (strapline != null && !strapline.isEmpty()) {
             TextView strapTv = new TextView(this);
             strapTv.setText(strapline.toUpperCase(Locale.getDefault()));
@@ -284,13 +342,87 @@ public class MainActivity extends AppCompatActivity {
             feedContainer.addView(strapTv);
         }
 
+        LinearLayout headerRow = new LinearLayout(this);
+        headerRow.setOrientation(LinearLayout.HORIZONTAL);
+        headerRow.setGravity(Gravity.CENTER_VERTICAL);
+        headerRow.setPadding(0, (strapline == null || strapline.isEmpty()) ? dp(12) : 0, 0, dp(12));
+
         TextView titleTv = new TextView(this);
         titleTv.setText(title);
         titleTv.setTextColor(Color.WHITE);
         titleTv.setTextSize(20);
         titleTv.setTypeface(null, Typeface.BOLD);
-        titleTv.setPadding(0, (strapline == null || strapline.isEmpty()) ? dp(12) : 0, 0, dp(12));
-        feedContainer.addView(titleTv);
+        titleTv.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        headerRow.addView(titleTv);
+
+        if (showSeeAll) {
+            TextView seeAllPill = new TextView(this);
+            seeAllPill.setText("Lihat semua ›");
+            seeAllPill.setTextColor(Color.parseColor("#E2E8F0"));
+            seeAllPill.setTextSize(12);
+            seeAllPill.setTypeface(null, Typeface.BOLD);
+            seeAllPill.setPadding(dp(12), dp(5), dp(12), dp(5));
+            seeAllPill.setBackground(createGlassSurface(
+                    Color.parseColor("#1FFFFFFF"), Color.parseColor("#38FFFFFF"), dp(16)));
+            headerRow.addView(seeAllPill);
+        }
+
+        feedContainer.addView(headerRow);
+    }
+
+    // Kartu "Find Your Mood" warna-warni gradien dengan logo gelombang di kanan atas (seperti gambar 2)
+    private void addMoodCardsRow(List<YouTubeMusicClient.Song> items) {
+        HorizontalScrollView hsv = new HorizontalScrollView(this);
+        hsv.setHorizontalScrollBarEnabled(false);
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+
+        int[][] paletteGradients = {
+                {Color.parseColor("#00C853"), Color.parseColor("#007E33")},
+                {Color.parseColor("#0284C7"), Color.parseColor("#0369A1")},
+                {Color.parseColor("#4F46E5"), Color.parseColor("#312E81")},
+                {Color.parseColor("#E11D48"), Color.parseColor("#9F1239")},
+                {Color.parseColor("#D97706"), Color.parseColor("#92400E")}
+        };
+
+        for (int i = 0; i < items.size(); i++) {
+            YouTubeMusicClient.Song mood = items.get(i);
+            FrameLayout card = new FrameLayout(this);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(156), dp(112));
+            lp.setMargins(0, 0, dp(12), dp(16));
+            card.setLayoutParams(lp);
+            applySpringTouch(card);
+
+            int[] colors = paletteGradients[i % paletteGradients.length];
+            GradientDrawable bg = new GradientDrawable(GradientDrawable.Orientation.TL_BR, colors);
+            bg.setCornerRadius(dp(18));
+            card.setBackground(bg);
+
+            // Logo Gelombang Putih di Kanan Atas Kartu Mood
+            ImageView cornerWave = createSvgIcon(R.drawable.ic_convx_logo, 20, Color.WHITE);
+            FrameLayout.LayoutParams waveLp = new FrameLayout.LayoutParams(dp(20), dp(20));
+            waveLp.gravity = Gravity.TOP | Gravity.END;
+            waveLp.setMargins(0, dp(12), dp(12), 0);
+            card.addView(cornerWave, waveLp);
+
+            // Nama Mood di Kiri Bawah
+            TextView moodLabel = new TextView(this);
+            moodLabel.setText(mood.title);
+            moodLabel.setTextColor(Color.WHITE);
+            moodLabel.setTextSize(15);
+            moodLabel.setTypeface(null, Typeface.BOLD);
+            FrameLayout.LayoutParams lblLp = new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            lblLp.gravity = Gravity.BOTTOM | Gravity.START;
+            lblLp.setMargins(dp(14), 0, dp(12), dp(12));
+            card.addView(moodLabel, lblLp);
+
+            card.setOnClickListener(v -> openPlaylistDetail(mood));
+            row.addView(card);
+        }
+
+        hsv.addView(row);
+        feedContainer.addView(hsv);
     }
 
     private void addHeroCardsRow(List<YouTubeMusicClient.Song> items) {
@@ -532,13 +664,14 @@ public class MainActivity extends AppCompatActivity {
         playlistDetailOverlay.setVisibility(View.VISIBLE);
 
         TextView loading = new TextView(this);
-        loading.setText("Memuat daftar lagu playlist...");
+        loading.setText("Memuat daftar lagu...");
         loading.setTextColor(Color.parseColor("#94A3B8"));
         playlistSongsContainer.addView(loading);
 
         executor.execute(() -> {
             try {
-                List<YouTubeMusicClient.HomeSection> secs = YouTubeMusicClient.getBrowseSections(playlistItem.browseId);
+                List<YouTubeMusicClient.HomeSection> secs = YouTubeMusicClient.getBrowseSections(
+                        playlistItem.browseId, playlistItem.browseParams);
                 List<YouTubeMusicClient.Song> tracks = new ArrayList<>();
                 for (YouTubeMusicClient.HomeSection s : secs) {
                     for (YouTubeMusicClient.Song song : s.items) {
@@ -548,7 +681,7 @@ public class MainActivity extends AppCompatActivity {
                 uiHandler.post(() -> {
                     playlistSongsContainer.removeAllViews();
                     if (tracks.isEmpty()) {
-                        loading.setText("Tidak ada lagu ditemukan di playlist ini.");
+                        loading.setText("Tidak ada lagu ditemukan.");
                         playlistSongsContainer.addView(loading);
                         return;
                     }
@@ -642,12 +775,12 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
-    private LinearLayout buildBottomDock() {
+    // Dock Bawah Mode Normal (Expanded)
+    private LinearLayout buildExpandedDock() {
         LinearLayout dock = new LinearLayout(this);
         dock.setOrientation(LinearLayout.VERTICAL);
 
-        // 1. Mini Player Card
-        miniPlayerCard = new LinearLayout(this);
+        LinearLayout miniPlayerCard = new LinearLayout(this);
         miniPlayerCard.setOrientation(LinearLayout.HORIZONTAL);
         miniPlayerCard.setGravity(Gravity.CENTER_VERTICAL);
         miniPlayerCard.setPadding(dp(10), dp(8), dp(12), dp(8));
@@ -701,7 +834,6 @@ public class MainActivity extends AppCompatActivity {
         miniLp.setMargins(0, 0, 0, dp(10));
         dock.addView(miniPlayerCard, miniLp);
 
-        // 2. Navigation Bar Row (Pill [Home | Explore | Library] + Circle [Search])
         LinearLayout navRow = new LinearLayout(this);
         navRow.setOrientation(LinearLayout.HORIZONTAL);
         navRow.setGravity(Gravity.CENTER_VERTICAL);
@@ -716,9 +848,9 @@ public class MainActivity extends AppCompatActivity {
         navExploreTab = createNavTabItem(R.drawable.ic_explore, "Explore");
         navLibraryTab = createNavTabItem(R.drawable.ic_library, "Library");
 
-        navHomeTab.setOnClickListener(v -> loadFeedTab("HOME", "FEmusic_home"));
-        navExploreTab.setOnClickListener(v -> loadFeedTab("EXPLORE", "FEmusic_explore"));
-        navLibraryTab.setOnClickListener(v -> loadFeedTab("LIBRARY", "FEmusic_liked_playlists"));
+        navHomeTab.setOnClickListener(v -> loadFeedTab("HOME", "FEmusic_home", ""));
+        navExploreTab.setOnClickListener(v -> loadFeedTab("EXPLORE", "FEmusic_explore", ""));
+        navLibraryTab.setOnClickListener(v -> loadFeedTab("LIBRARY", "FEmusic_liked_playlists", ""));
 
         pillGroup.addView(navHomeTab, new LinearLayout.LayoutParams(0, dp(48), 1f));
         pillGroup.addView(navExploreTab, new LinearLayout.LayoutParams(0, dp(48), 1f));
@@ -745,6 +877,92 @@ public class MainActivity extends AppCompatActivity {
 
         dock.addView(navRow);
         return dock;
+    }
+
+    // Dock Bawah Mode Scroll (Gaya Apple Music seperti gambar 2: [Home] [MiniPlayer Pill] [Search])
+    private LinearLayout buildCompactDock() {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+
+        ImageView homeCircle = new ImageView(this);
+        homeCircle.setImageResource(R.drawable.ic_home);
+        homeCircle.setColorFilter(Color.WHITE);
+        homeCircle.setPadding(dp(15), dp(15), dp(15), dp(15));
+        homeCircle.setBackground(createGlassSurface(
+                Color.parseColor("#E616171C"), Color.parseColor("#4DFFFFFF"), dp(27)));
+        applySpringTouch(homeCircle);
+        homeCircle.setOnClickListener(v -> {
+            feedScrollView.smoothScrollTo(0, 0);
+            if (!activeTab.equals("HOME")) loadFeedTab("HOME", "FEmusic_home", "");
+        });
+        row.addView(homeCircle, new LinearLayout.LayoutParams(dp(54), dp(54)));
+
+        // Kapsul Mini Player di Tengah
+        LinearLayout centerPill = new LinearLayout(this);
+        centerPill.setOrientation(LinearLayout.HORIZONTAL);
+        centerPill.setGravity(Gravity.CENTER_VERTICAL);
+        centerPill.setPadding(dp(8), dp(6), dp(12), dp(6));
+        centerPill.setBackground(createGlassSurface(
+                Color.parseColor("#E616171C"), Color.parseColor("#4DFFFFFF"), dp(27)));
+        applySpringTouch(centerPill);
+
+        compactCover = new ImageView(this);
+        compactCover.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        compactCover.setBackgroundColor(Color.parseColor("#2A303C"));
+        roundView(compactCover, dp(10));
+        centerPill.addView(compactCover, new LinearLayout.LayoutParams(dp(38), dp(38)));
+
+        LinearLayout info = new LinearLayout(this);
+        info.setOrientation(LinearLayout.VERTICAL);
+        info.setPadding(dp(10), 0, dp(6), 0);
+
+        compactTitle = new TextView(this);
+        compactTitle.setText("Pilih lagu");
+        compactTitle.setTextColor(Color.WHITE);
+        compactTitle.setTextSize(13);
+        compactTitle.setTypeface(null, Typeface.BOLD);
+        compactTitle.setSingleLine(true);
+        compactTitle.setEllipsize(TextUtils.TruncateAt.END);
+
+        compactArtist = new TextView(this);
+        compactArtist.setText("YouTube Music");
+        compactArtist.setTextColor(Color.parseColor("#94A3B8"));
+        compactArtist.setTextSize(11);
+        compactArtist.setSingleLine(true);
+        compactArtist.setEllipsize(TextUtils.TruncateAt.END);
+
+        info.addView(compactTitle);
+        info.addView(compactArtist);
+        centerPill.addView(info, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        compactPlayBtn = createSvgIcon(R.drawable.ic_play, 24, Color.WHITE);
+        compactPlayBtn.setPadding(dp(4), dp(4), dp(4), dp(4));
+        compactPlayBtn.setOnClickListener(v -> togglePlayPause());
+        centerPill.addView(compactPlayBtn, new LinearLayout.LayoutParams(dp(34), dp(34)));
+
+        centerPill.setOnClickListener(v -> openFullPlayer());
+        LinearLayout.LayoutParams centerLp = new LinearLayout.LayoutParams(0, dp(54), 1f);
+        centerLp.setMargins(dp(8), 0, dp(8), 0);
+        row.addView(centerPill, centerLp);
+
+        ImageView searchCircle = new ImageView(this);
+        searchCircle.setImageResource(R.drawable.ic_search);
+        searchCircle.setColorFilter(Color.WHITE);
+        searchCircle.setPadding(dp(15), dp(15), dp(15), dp(15));
+        searchCircle.setBackground(createGlassSurface(
+                Color.parseColor("#E616171C"), Color.parseColor("#4DFFFFFF"), dp(27)));
+        applySpringTouch(searchCircle);
+        searchCircle.setOnClickListener(v -> {
+            switchToCompactDock(false);
+            activeTab = "SEARCH";
+            updateNavPillStyles();
+            playlistDetailOverlay.setVisibility(View.GONE);
+            searchOverlay.setVisibility(View.VISIBLE);
+        });
+        row.addView(searchCircle, new LinearLayout.LayoutParams(dp(54), dp(54)));
+
+        return row;
     }
 
     private LinearLayout createNavTabItem(int iconResId, String label) {
@@ -861,7 +1079,7 @@ public class MainActivity extends AppCompatActivity {
         logoutRowBtn.setOnClickListener(v -> {
             YouTubeMusicClient.saveToken(this, "");
             refreshAccountState();
-            loadFeedTab("HOME", "FEmusic_home");
+            loadFeedTab("HOME", "FEmusic_home", "");
             Toast.makeText(this, "Token dihapus", Toast.LENGTH_SHORT).show();
         });
         accountCard.addView(logoutRowBtn);
@@ -949,9 +1167,14 @@ public class MainActivity extends AppCompatActivity {
                 Toast.makeText(this, "Format token tidak valid (SAPISID tidak ditemukan)", Toast.LENGTH_LONG).show();
                 return;
             }
-            refreshAccountState();
-            loadFeedTab("HOME", "FEmusic_home");
-            Toast.makeText(this, "Token berhasil disimpan! Memuat feed akun...", Toast.LENGTH_SHORT).show();
+            executor.execute(() -> {
+                YouTubeMusicClient.fetchAccountProfile(this);
+                uiHandler.post(() -> {
+                    refreshAccountState();
+                    loadFeedTab("HOME", "FEmusic_home", "");
+                });
+            });
+            Toast.makeText(this, "Token berhasil disimpan! Mengambil profil akun...", Toast.LENGTH_SHORT).show();
             dialog.dismiss();
         });
 
@@ -968,17 +1191,31 @@ public class MainActivity extends AppCompatActivity {
     private void refreshAccountState() {
         if (profileIconBtn == null) return;
         boolean loggedIn = YouTubeMusicClient.isLoggedIn();
-        if (loggedIn) {
+        String avatarUrl = YouTubeMusicClient.getSavedAvatarUrl();
+
+        if (loggedIn && !avatarUrl.isEmpty()) {
+            profileIconBtn.setPadding(0, 0, 0, 0);
+            profileIconBtn.setColorFilter(null);
             profileIconBtn.setBackground(createGlassSurface(
-                    Color.parseColor("#33F43F5E"), Color.parseColor("#F43F5E"), dp(21)));
+                    Color.TRANSPARENT, Color.parseColor("#F43F5E"), dp(22)));
+            Glide.with(this).load(avatarUrl).circleCrop().into(profileIconBtn);
+        } else {
+            profileIconBtn.setPadding(dp(10), dp(10), dp(10), dp(10));
+            profileIconBtn.setImageResource(R.drawable.ic_profile);
+            profileIconBtn.setColorFilter(Color.WHITE);
+            profileIconBtn.setBackground(createGlassSurface(
+                    loggedIn ? Color.parseColor("#33F43F5E") : Color.parseColor("#26FFFFFF"),
+                    loggedIn ? Color.parseColor("#F43F5E") : Color.parseColor("#55FFFFFF"),
+                    dp(22)));
+        }
+
+        if (loggedIn) {
             if (accountStatusText != null) {
-                accountStatusText.setText("Terhubung via InnerTube Cookie • Aktif");
+                accountStatusText.setText("Terhubung sebagai " + YouTubeMusicClient.getSavedAccountName() + " • Aktif");
                 accountStatusText.setTextColor(Color.parseColor("#34D399"));
             }
             if (logoutRowBtn != null) logoutRowBtn.setVisibility(View.VISIBLE);
         } else {
-            profileIconBtn.setBackground(createGlassSurface(
-                    Color.parseColor("#26FFFFFF"), Color.parseColor("#55FFFFFF"), dp(21)));
             if (accountStatusText != null) {
                 accountStatusText.setText("Belum login • Ketuk untuk memasukkan InnerTube Cookie");
                 accountStatusText.setTextColor(Color.parseColor("#94A3B8"));
@@ -1157,6 +1394,8 @@ public class MainActivity extends AppCompatActivity {
 
         miniTitle.setText("Memuat: " + song.title);
         miniArtist.setText(song.subtitle);
+        compactTitle.setText(song.title);
+        compactArtist.setText(song.subtitle);
         fullTitle.setText(song.title);
         fullArtist.setText(song.subtitle);
 
@@ -1164,6 +1403,7 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public void onResourceReady(@NonNull Bitmap resource, @Nullable Transition<? super Bitmap> transition) {
                 miniCover.setImageBitmap(resource);
+                compactCover.setImageBitmap(resource);
                 fullCover.setImageBitmap(resource);
                 Palette.from(resource).generate(palette -> {
                     if (palette != null) {
@@ -1259,6 +1499,7 @@ public class MainActivity extends AppCompatActivity {
                     public void onIsPlayingChanged(boolean isPlaying) {
                         int iconRes = isPlaying ? R.drawable.ic_pause : R.drawable.ic_play;
                         miniPlayBtn.setImageResource(iconRes);
+                        compactPlayBtn.setImageResource(iconRes);
                         fullPlayBtn.setImageResource(iconRes);
                     }
 
@@ -1365,7 +1606,7 @@ public class MainActivity extends AppCompatActivity {
         } else if (playlistDetailOverlay.getVisibility() == View.VISIBLE) {
             playlistDetailOverlay.setVisibility(View.GONE);
         } else if (searchOverlay.getVisibility() == View.VISIBLE) {
-            loadFeedTab("HOME", "FEmusic_home");
+            loadFeedTab("HOME", "FEmusic_home", "");
         } else {
             super.onBackPressed();
         }

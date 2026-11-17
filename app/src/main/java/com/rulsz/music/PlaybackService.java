@@ -4,48 +4,46 @@ import androidx.annotation.OptIn;
 import androidx.media3.common.AudioAttributes;
 import androidx.media3.common.C;
 import androidx.media3.common.util.UnstableApi;
-import androidx.media3.datasource.DataSource;
-import androidx.media3.datasource.DefaultHttpDataSource;
-import androidx.media3.datasource.ResolvingDataSource;
+import androidx.media3.database.StandaloneDatabaseProvider;
+import androidx.media3.datasource.DefaultDataSource;
+import androidx.media3.datasource.cache.CacheDataSource;
+import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor;
+import androidx.media3.datasource.cache.SimpleCache;
 import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory;
 import androidx.media3.session.MediaSession;
 import androidx.media3.session.MediaSessionService;
 
-import java.util.Collections;
+import java.io.File;
 
+@OptIn(markerClass = UnstableApi.class)
 public class PlaybackService extends MediaSessionService {
     private MediaSession mediaSession;
+    private static SimpleCache simpleCache;
 
-    @OptIn(markerClass = UnstableApi.class)
     @Override
     public void onCreate() {
         super.onCreate();
+
+        if (simpleCache == null) {
+            File cacheDir = new File(getCacheDir(), "media_cache");
+            LeastRecentlyUsedCacheEvictor evictor = new LeastRecentlyUsedCacheEvictor(100 * 1024 * 1024); // 100 MB
+            simpleCache = new SimpleCache(cacheDir, evictor, new StandaloneDatabaseProvider(this));
+        }
+
+        DefaultDataSource.Factory upstreamFactory = new DefaultDataSource.Factory(this);
+        CacheDataSource.Factory cacheDataSourceFactory = new CacheDataSource.Factory()
+                .setCache(simpleCache)
+                .setUpstreamDataSourceFactory(upstreamFactory)
+                .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR);
+
         AudioAttributes audioAttributes = new AudioAttributes.Builder()
                 .setUsage(C.USAGE_MEDIA)
                 .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
                 .build();
 
-        DefaultHttpDataSource.Factory httpFactory = new DefaultHttpDataSource.Factory()
-                .setAllowCrossProtocolRedirects(true)
-                .setConnectTimeoutMs(15000)
-                .setReadTimeoutMs(15000);
-
-        DataSource.Factory resolvingFactory = new ResolvingDataSource.Factory(
-                httpFactory,
-                dataSpec -> {
-                    String ua = YouTubeMusicClient.currentActiveUserAgent;
-                    if (ua == null || ua.isEmpty()) {
-                        ua = "AppleCoreMedia/1.0.0.22D82 (iPhone; U; CPU OS 18_3_2 like Mac OS X; en_us)";
-                    }
-                    return dataSpec.buildUpon()
-                            .setHttpRequestHeaders(Collections.singletonMap("User-Agent", ua))
-                            .build();
-                }
-        );
-
         ExoPlayer player = new ExoPlayer.Builder(this)
-                .setMediaSourceFactory(new DefaultMediaSourceFactory(resolvingFactory))
+                .setMediaSourceFactory(new DefaultMediaSourceFactory(cacheDataSourceFactory))
                 .setAudioAttributes(audioAttributes, true)
                 .setHandleAudioBecomingNoisy(true)
                 .build();

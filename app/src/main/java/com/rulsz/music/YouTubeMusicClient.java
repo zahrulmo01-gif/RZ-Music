@@ -28,13 +28,12 @@ public class YouTubeMusicClient {
         }
     }
 
-    // 1. Cari lagu langsung dari InnerTube YouTube Music (WEB_REMIX)
     public static List<Song> searchSongs(String query) throws Exception {
         String url = "https://music.youtube.com/youtubei/v1/search?prettyPrint=false";
         String payload = "{"
-                + "\"context\": {\"client\": {\"clientName\": \"WEB_REMIX\", \"clientVersion\": \"1.20240724.00.00\", \"hl\": \"id\", \"gl\": \"ID\"}},"
+                + "\"context\": {\"client\": {\"clientName\": \"WEB_REMIX\", \"clientVersion\": \"1.20241101.01.00\", \"hl\": \"id\", \"gl\": \"ID\"}},"
                 + "\"query\": " + JSONObject.quote(query) + ","
-                + "\"params\": \"EgWKAQIIAWoKEAMQBBAJEAoQBQ%3D%3D\"" // Filter khusus Songs
+                + "\"params\": \"EgWKAQIIAWoKEAMQBBAJEAoQBQ%3D%3D\""
                 + "}";
 
         Request request = new Request.Builder()
@@ -47,10 +46,8 @@ public class YouTubeMusicClient {
         List<Song> results = new ArrayList<>();
         try (Response response = client.newCall(request).execute()) {
             if (!response.isSuccessful() || response.body() == null) return results;
-            String raw = response.body().string();
-            JSONObject root = new JSONObject(raw);
+            JSONObject root = new JSONObject(response.body().string());
 
-            // Navigasi struktur JSON InnerTube MusicResponsiveListItemRenderer
             JSONArray tabs = root.getJSONObject("contents")
                     .getJSONObject("tabbedSearchResultsRenderer")
                     .getJSONArray("tabs");
@@ -84,7 +81,7 @@ public class YouTubeMusicClient {
                             .getJSONObject("text").getJSONArray("runs")
                             .getJSONObject(0).getString("text");
 
-                    String thumb = "https://i.ytimg.com/vi/" + videoId + "/hqdefault.jpg";
+                    String thumb = "https://i.ytimg.com/vi/" + videoId + "/sddefault.jpg";
                     results.add(new Song(videoId, title, artist, thumb));
                 }
             }
@@ -92,40 +89,60 @@ public class YouTubeMusicClient {
         return results;
     }
 
-    // 2. Ambil Direct Audio Stream URL via InnerTube ANDROID_MUSIC
     public static String getAudioStreamUrl(String videoId) throws Exception {
-        String url = "https://music.youtube.com/youtubei/v1/player?prettyPrint=false";
-        String payload = "{"
-                + "\"context\": {\"client\": {\"clientName\": \"ANDROID_MUSIC\", \"clientVersion\": \"7.03.52\", \"androidSdkVersion\": 34, \"hl\": \"id\", \"gl\": \"ID\"}},"
-                + "\"videoId\": \"" + videoId + "\""
-                + "}";
+        // Rantai fallback client ala Convx 2.0 (VISIONOS -> ANDROID_MUSIC)
+        String[][] clients = {
+                {"VISIONOS", "0.1", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15"},
+                {"ANDROID_MUSIC", "7.03.52", "com.google.android.apps.youtube.music/7.03.52 (Linux; U; Android 14)"}
+        };
 
-        Request request = new Request.Builder()
-                .url(url)
-                .header("User-Agent", "com.google.android.apps.youtube.music/7.03.52 (Linux; U; Android 14)")
-                .post(RequestBody.create(payload, JSON))
-                .build();
+        for (String[] c : clients) {
+            String stream = fetchStreamWithClient(videoId, c[0], c[1], c[2]);
+            if (stream != null && !stream.isEmpty()) {
+                return stream;
+            }
+        }
+        return null;
+    }
 
-        try (Response response = client.newCall(request).execute()) {
-            if (!response.isSuccessful() || response.body() == null) return null;
-            JSONObject root = new JSONObject(response.body().string());
-            JSONArray formats = root.getJSONObject("streamingData").getJSONArray("adaptiveFormats");
+    private static String fetchStreamWithClient(String videoId, String clientName, String clientVersion, String userAgent) {
+        try {
+            String url = "https://music.youtube.com/youtubei/v1/player?prettyPrint=false";
+            String payload = "{"
+                    + "\"context\": {\"client\": {\"clientName\": \"" + clientName + "\", \"clientVersion\": \"" + clientVersion + "\", \"hl\": \"id\", \"gl\": \"ID\"}},"
+                    + "\"videoId\": \"" + videoId + "\""
+                    + "}";
 
-            String bestAudioUrl = null;
-            int maxBitrate = 0;
+            Request request = new Request.Builder()
+                    .url(url)
+                    .header("User-Agent", userAgent)
+                    .post(RequestBody.create(payload, JSON))
+                    .build();
 
-            for (int i = 0; i < formats.length(); i++) {
-                JSONObject fmt = formats.getJSONObject(i);
-                String mimeType = fmt.optString("mimeType", "");
-                if (mimeType.startsWith("audio/") && fmt.has("url")) {
-                    int bitrate = fmt.optInt("bitrate", 0);
-                    if (bitrate > maxBitrate) {
-                        maxBitrate = bitrate;
-                        bestAudioUrl = fmt.getString("url");
+            try (Response response = client.newCall(request).execute()) {
+                if (!response.isSuccessful() || response.body() == null) return null;
+                JSONObject root = new JSONObject(response.body().string());
+                if (!root.has("streamingData")) return null;
+
+                JSONArray formats = root.getJSONObject("streamingData").getJSONArray("adaptiveFormats");
+                String bestAudioUrl = null;
+                int maxBitrate = 0;
+
+                for (int i = 0; i < formats.length(); i++) {
+                    JSONObject fmt = formats.getJSONObject(i);
+                    String mimeType = fmt.optString("mimeType", "");
+                    if (mimeType.startsWith("audio/") && fmt.has("url")) {
+                        int bitrate = fmt.optInt("bitrate", 0);
+                        if (bitrate > maxBitrate) {
+                            maxBitrate = bitrate;
+                            bestAudioUrl = fmt.getString("url");
+                        }
                     }
                 }
+                return bestAudioUrl;
             }
-            return bestAudioUrl;
+        } catch (Exception ignored) {
+            return null;
         }
     }
 }

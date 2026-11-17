@@ -378,7 +378,8 @@ public class MainActivity extends AppCompatActivity {
         public GlassLensView(Context context) {
             super(context);
             rimPaint.setStyle(Paint.Style.STROKE);
-            rimPaint.setStrokeWidth(dp(1.4f));
+                        rimPaint.setStrokeWidth(1.4f * getResources().getDisplayMetrics().density);
+
         }
 
         @Override

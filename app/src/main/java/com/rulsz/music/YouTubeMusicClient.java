@@ -1,7 +1,11 @@
 package com.rulsz.music;
 
+import android.content.Context;
+import android.content.SharedPreferences;
 import org.json.JSONArray;
 import org.json.JSONObject;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.List;
 import okhttp3.MediaType;
@@ -13,6 +17,9 @@ import okhttp3.Response;
 public class YouTubeMusicClient {
     private static final OkHttpClient client = new OkHttpClient();
     private static final MediaType JSON = MediaType.get("application/json; charset=utf-8");
+    private static final String PREF_NAME = "convx_auth_prefs";
+    private static final String KEY_COOKIE = "innertube_cookie";
+    private static String savedCookie = "";
 
     public static class StreamResult {
         public String url;
@@ -38,6 +45,87 @@ public class YouTubeMusicClient {
         }
     }
 
+    // Muat cookie tersimpan saat aplikasi dibuka
+    public static void init(Context context) {
+        SharedPreferences prefs = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE);
+        savedCookie = prefs.getString(KEY_COOKIE, "");
+    }
+
+    public static String getRawToken(Context context) {
+        if (savedCookie.isEmpty()) init(context);
+        if (savedCookie.isEmpty()) return "";
+        return "***INNERTUBE COOKIE***\n=" + savedCookie;
+    }
+
+    public static boolean isLoggedIn() {
+        return !extractSapisid(savedCookie).isEmpty();
+    }
+
+    // Parsing & Validasi token format ***INNERTUBE COOKIE*** seperti di Metrolist/ArchiveTune
+    public static boolean saveToken(Context context, String rawInput) {
+        if (rawInput == null || rawInput.trim().isEmpty()) {
+            savedCookie = "";
+            context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+                    .edit().remove(KEY_COOKIE).apply();
+            return true;
+        }
+
+        String cleaned = rawInput.trim();
+        if (cleaned.startsWith("***INNERTUBE COOKIE***")) {
+            cleaned = cleaned.replace("***INNERTUBE COOKIE***", "").trim();
+            if (cleaned.startsWith("=")) {
+                cleaned = cleaned.substring(1).trim();
+            }
+        }
+        // Gabungkan baris baru jika user paste multi-line
+        cleaned = cleaned.replace("\n", "").replace("\r", "").trim();
+
+        // Validasi wajib memiliki SAPISID atau __Secure-3PAPISID
+        if (extractSapisid(cleaned).isEmpty()) {
+            return false;
+        }
+
+        savedCookie = cleaned;
+        context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+                .edit().putString(KEY_COOKIE, cleaned).apply();
+        return true;
+    }
+
+    private static String extractSapisid(String cookie) {
+        if (cookie == null || cookie.isEmpty()) return "";
+        String[] parts = cookie.split(";");
+        String fallback = "";
+        for (String part : parts) {
+            String p = part.trim();
+            if (p.startsWith("__Secure-3PAPISID=")) {
+                return p.substring("__Secure-3PAPISID=".length()).trim();
+            }
+            if (p.startsWith("SAPISID=")) {
+                fallback = p.substring("SAPISID=".length()).trim();
+            }
+        }
+        return fallback;
+    }
+
+    // Generate Authorization: SAPISIDHASH <timestamp>_<sha1> untuk autentikasi YouTube Music
+    private static String buildSapisidHashHeader(String origin) {
+        String sapisid = extractSapisid(savedCookie);
+        if (sapisid.isEmpty()) return null;
+        try {
+            long timestamp = System.currentTimeMillis() / 1000L;
+            String input = timestamp + " " + sapisid + " " + origin;
+            MessageDigest md = MessageDigest.getInstance("SHA-1");
+            byte[] digest = md.digest(input.getBytes(StandardCharsets.UTF_8));
+            StringBuilder hex = new StringBuilder();
+            for (byte b : digest) {
+                hex.append(String.format("%02x", b));
+            }
+            return "SAPISIDHASH " + timestamp + "_" + hex;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
     public static List<Song> searchSongs(String query) throws Exception {
         String url = "https://music.youtube.com/youtubei/v1/search?prettyPrint=false";
         String payload = "{"
@@ -46,15 +134,20 @@ public class YouTubeMusicClient {
                 + "\"params\": \"EgWKAQIIAWoKEAMQBBAJEAoQBQ%3D%3D\""
                 + "}";
 
-        Request request = new Request.Builder()
+        Request.Builder reqBuilder = new Request.Builder()
                 .url(url)
                 .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
                 .header("Origin", "https://music.youtube.com")
-                .post(RequestBody.create(payload, JSON))
-                .build();
+                .post(RequestBody.create(payload, JSON));
+
+        if (!savedCookie.isEmpty()) {
+            reqBuilder.header("Cookie", savedCookie);
+            String auth = buildSapisidHashHeader("https://music.youtube.com");
+            if (auth != null) reqBuilder.header("Authorization", auth);
+        }
 
         List<Song> results = new ArrayList<>();
-        try (Response response = client.newCall(request).execute()) {
+        try (Response response = client.newCall(reqBuilder.build()).execute()) {
             if (!response.isSuccessful() || response.body() == null) return results;
             JSONObject root = new JSONObject(response.body().string());
 
@@ -100,7 +193,6 @@ public class YouTubeMusicClient {
     }
 
     public static StreamResult getAudioStream(String videoId) {
-        // Format: {clientName, clientIdHeader, clientVersion, userAgent, extraClientJson}
         String[][] clients = {
                 {
                         "ANDROID_VR",
@@ -150,16 +242,21 @@ public class YouTubeMusicClient {
                     + "\"racyCheckOk\": true"
                     + "}";
 
-            Request request = new Request.Builder()
+            Request.Builder reqBuilder = new Request.Builder()
                     .url(url)
                     .header("User-Agent", userAgent)
                     .header("X-YouTube-Client-Name", clientId)
                     .header("X-YouTube-Client-Version", clientVersion)
                     .header("Origin", "https://www.youtube.com")
-                    .post(RequestBody.create(payload, JSON))
-                    .build();
+                    .post(RequestBody.create(payload, JSON));
 
-            try (Response response = client.newCall(request).execute()) {
+            if (!savedCookie.isEmpty()) {
+                reqBuilder.header("Cookie", savedCookie);
+                String auth = buildSapisidHashHeader("https://www.youtube.com");
+                if (auth != null) reqBuilder.header("Authorization", auth);
+            }
+
+            try (Response response = client.newCall(reqBuilder.build()).execute()) {
                 if (!response.isSuccessful() || response.body() == null) return null;
                 JSONObject root = new JSONObject(response.body().string());
                 if (!root.has("streamingData")) return null;
@@ -174,7 +271,6 @@ public class YouTubeMusicClient {
                 for (int i = 0; i < formats.length(); i++) {
                     JSONObject fmt = formats.getJSONObject(i);
                     String mimeType = fmt.optString("mimeType", "");
-                    // Ambil stream audio m4a/webm yang memiliki direct url (bukan signatureCipher)
                     if (mimeType.startsWith("audio/") && fmt.has("url")) {
                         int bitrate = fmt.optInt("bitrate", 0);
                         if (bitrate > maxBitrate) {

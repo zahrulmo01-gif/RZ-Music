@@ -8,6 +8,7 @@ import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.Outline;
 import android.graphics.Typeface;
+import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
@@ -27,6 +28,7 @@ import android.view.animation.OvershootInterpolator;
 import android.view.inputmethod.EditorInfo;
 import android.widget.EditText;
 import android.widget.FrameLayout;
+import android.widget.HorizontalScrollView;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -53,6 +55,7 @@ import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.MoreExecutors;
 
 import java.util.ArrayList;
+import java.util.Calendar;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
@@ -63,16 +66,29 @@ public class MainActivity extends AppCompatActivity {
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final Handler uiHandler = new Handler(Looper.getMainLooper());
 
-    private final List<YouTubeMusicClient.Song> songList = new ArrayList<>();
-    private SongAdapter adapter;
+    private final List<YouTubeMusicClient.Song> activeQueue = new ArrayList<>();
+    private final List<YouTubeMusicClient.Song> searchResults = new ArrayList<>();
+    private SongListAdapter searchAdapter;
     private int currentIndex = -1;
-    private int currentAccentColor = Color.parseColor("#1E293B");
+    private int currentAccentColor = Color.parseColor("#18181B");
 
     // Root & Backdrop
     private FrameLayout rootFrame;
     private View ambientBackdrop;
 
-    // Profile & Settings Views
+    // Tab Containers
+    private ScrollView feedScrollView;
+    private LinearLayout feedContainer;
+    private LinearLayout searchOverlay;
+    private LinearLayout playlistDetailOverlay;
+    private LinearLayout playlistSongsContainer;
+    private TextView playlistHeaderTitle;
+
+    // Bottom Navigation Pill
+    private TextView navHomeBtn, navExploreBtn, navLibraryBtn, navSearchBtn;
+    private String activeTab = "HOME";
+
+    // Profile & Settings
     private TextView profileIconBtn;
     private LinearLayout settingsSheet;
     private TextView accountStatusText;
@@ -95,44 +111,60 @@ public class MainActivity extends AppCompatActivity {
         super.onCreate(savedInstanceState);
         YouTubeMusicClient.init(this);
 
-        // Edge-to-edge transparent status bar ala iOS / Convx
         Window window = getWindow();
         window.clearFlags(WindowManager.LayoutParams.FLAG_TRANSLUCENT_STATUS);
         window.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
         window.setStatusBarColor(Color.TRANSPARENT);
-        window.setNavigationBarColor(Color.parseColor("#090B0E"));
+        window.setNavigationBarColor(Color.parseColor("#050507"));
         window.getDecorView().setSystemUiVisibility(
                 View.SYSTEM_UI_FLAG_LAYOUT_STABLE | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN);
 
         rootFrame = new FrameLayout(this);
-        rootFrame.setBackgroundColor(Color.parseColor("#090B0E"));
+        rootFrame.setBackgroundColor(Color.parseColor("#050507"));
 
-        // Adaptive Ambient Liquid Glow Backdrop
+        // Ambient Backdrop
         ambientBackdrop = new View(this);
-        updateAmbientColors(Color.parseColor("#1E3A5F"));
+        updateAmbientColors(Color.parseColor("#141218"));
         rootFrame.addView(ambientBackdrop, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
-        // Main Browse Screen
-        LinearLayout browseScreen = buildBrowseScreen();
-        rootFrame.addView(browseScreen, new FrameLayout.LayoutParams(
+        // 1. Main Feed ScrollView (Home / Explore / Library)
+        feedScrollView = new ScrollView(this);
+        feedScrollView.setVerticalScrollBarEnabled(false);
+        feedContainer = new LinearLayout(this);
+        feedContainer.setOrientation(LinearLayout.VERTICAL);
+        feedContainer.setPadding(dp(18), dp(46), dp(18), dp(170));
+        feedScrollView.addView(feedContainer);
+        rootFrame.addView(feedScrollView, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
-        // Floating Liquid Glass Mini Player
-        miniPlayerCard = buildMiniPlayer();
-        FrameLayout.LayoutParams miniParams = new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        miniParams.gravity = Gravity.BOTTOM;
-        miniParams.setMargins(dp(16), 0, dp(16), dp(24));
-        rootFrame.addView(miniPlayerCard, miniParams);
+        // 2. Search Overlay
+        searchOverlay = buildSearchOverlay();
+        searchOverlay.setVisibility(View.GONE);
+        rootFrame.addView(searchOverlay, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
-        // Settings Screen Overlay
+        // 3. Playlist Detail Overlay
+        playlistDetailOverlay = buildPlaylistDetailOverlay();
+        playlistDetailOverlay.setVisibility(View.GONE);
+        rootFrame.addView(playlistDetailOverlay, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+        // 4. Floating Mini Player + Floating Bottom Glass Navigation Pill
+        LinearLayout bottomDock = buildBottomDock();
+        FrameLayout.LayoutParams dockParams = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        dockParams.gravity = Gravity.BOTTOM;
+        dockParams.setMargins(dp(14), 0, dp(14), dp(16));
+        rootFrame.addView(bottomDock, dockParams);
+
+        // 5. Settings Overlay
         settingsSheet = buildSettingsSheet();
         settingsSheet.setVisibility(View.GONE);
         rootFrame.addView(settingsSheet, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
-        // Full-Screen Cupertino Now Playing Sheet
+        // 6. Full-Screen Now Playing Sheet
         fullPlayerSheet = buildFullPlayerSheet();
         fullPlayerSheet.setVisibility(View.GONE);
         rootFrame.addView(fullPlayerSheet, new FrameLayout.LayoutParams(
@@ -143,53 +175,430 @@ public class MainActivity extends AppCompatActivity {
         initMediaController();
         startProgressUpdater();
 
-        // Muat rekomendasi awal otomatis
-        performSearch("Lagu Pop Indonesia Hits");
+        // Muat beranda YouTube Music (FEmusic_home)
+        loadFeedTab("HOME", "FEmusic_home");
     }
 
-    private LinearLayout buildBrowseScreen() {
-        LinearLayout container = new LinearLayout(this);
-        container.setOrientation(LinearLayout.VERTICAL);
-        container.setPadding(dp(18), dp(46), dp(18), 0);
+    private String getDynamicGreeting() {
+        int hour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY);
+        if (hour >= 0 && hour < 5) return "Up late, RZ";
+        if (hour < 12) return "Good morning, RZ";
+        if (hour < 18) return "Good afternoon, RZ";
+        return "Good evening, RZ";
+    }
 
-        // Top Header ala Convx + Icon Profil di Pojok Kanan Atas
-        LinearLayout headerRow = new LinearLayout(this);
-        headerRow.setOrientation(LinearLayout.HORIZONTAL);
-        headerRow.setGravity(Gravity.CENTER_VERTICAL);
-        headerRow.setPadding(dp(4), 0, dp(4), dp(14));
+    private void buildFeedHeader(String subtitleHeader) {
+        feedContainer.removeAllViews();
 
-        TextView appTitle = new TextView(this);
-        appTitle.setText("Convx");
-        appTitle.setTextColor(Color.WHITE);
-        appTitle.setTextSize(28);
-        appTitle.setTypeface(Typeface.create("sans-serif-medium", Typeface.BOLD));
-        appTitle.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        // Top Row: Logo Gelombang Merah + Ikon Profil Kanan Atas
+        LinearLayout topIcons = new LinearLayout(this);
+        topIcons.setOrientation(LinearLayout.HORIZONTAL);
+        topIcons.setGravity(Gravity.CENTER_VERTICAL);
+        topIcons.setPadding(0, 0, 0, dp(10));
 
-        // Tombol Icon Profil (Liquid Glass Circle)
+        TextView waveLogo = new TextView(this);
+        waveLogo.setText("≋");
+        waveLogo.setTextColor(Color.parseColor("#F43F5E"));
+        waveLogo.setTextSize(34);
+        waveLogo.setTypeface(null, Typeface.BOLD);
+        waveLogo.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
         profileIconBtn = new TextView(this);
         profileIconBtn.setText("👤");
         profileIconBtn.setTextColor(Color.WHITE);
         profileIconBtn.setTextSize(17);
         profileIconBtn.setGravity(Gravity.CENTER);
-        profileIconBtn.setBackground(createGlassSurface(
-                Color.parseColor("#26FFFFFF"), Color.parseColor("#55FFFFFF"), dp(21)));
         applySpringTouch(profileIconBtn);
         profileIconBtn.setOnClickListener(v -> openSettings());
 
-        headerRow.addView(appTitle);
-        headerRow.addView(profileIconBtn, new LinearLayout.LayoutParams(dp(42), dp(42)));
-        container.addView(headerRow);
+        topIcons.addView(waveLogo);
+        topIcons.addView(profileIconBtn, new LinearLayout.LayoutParams(dp(42), dp(42)));
+        feedContainer.addView(topIcons);
+        refreshAccountState();
 
-        // Liquid Glass Pill Search Bar
+        // Big Greeting Title ("Up late, RZ" / "Explore" / "Library")
+        TextView bigTitle = new TextView(this);
+        bigTitle.setText(subtitleHeader);
+        bigTitle.setTextColor(Color.WHITE);
+        bigTitle.setTextSize(30);
+        bigTitle.setTypeface(Typeface.create("sans-serif-medium", Typeface.BOLD));
+        bigTitle.setPadding(0, 0, 0, dp(18));
+        feedContainer.addView(bigTitle);
+    }
+
+    private void loadFeedTab(String tabName, String browseId) {
+        activeTab = tabName;
+        updateNavPillStyles();
+        searchOverlay.setVisibility(View.GONE);
+        playlistDetailOverlay.setVisibility(View.GONE);
+        feedScrollView.setVisibility(View.VISIBLE);
+        feedScrollView.scrollTo(0, 0);
+
+        String headerTitle = tabName.equals("HOME") ? getDynamicGreeting()
+                : (tabName.equals("EXPLORE") ? "Explore" : "Library");
+        buildFeedHeader(headerTitle);
+
+        TextView loadingTv = new TextView(this);
+        loadingTv.setText("Memuat data dari YouTube Music...");
+        loadingTv.setTextColor(Color.parseColor("#94A3B8"));
+        loadingTv.setTextSize(14);
+        feedContainer.addView(loadingTv);
+
+        executor.execute(() -> {
+            try {
+                List<YouTubeMusicClient.HomeSection> sections = YouTubeMusicClient.getBrowseSections(browseId);
+                uiHandler.post(() -> {
+                    feedContainer.removeView(loadingTv);
+                    if (sections.isEmpty()) {
+                        TextView emptyTv = new TextView(this);
+                        emptyTv.setText("Tidak ada data. Pastikan koneksi lancar atau masukkan token akun di ikon profil kanan atas.");
+                        emptyTv.setTextColor(Color.parseColor("#94A3B8"));
+                        feedContainer.addView(emptyTv);
+                        return;
+                    }
+
+                    for (int sIdx = 0; sIdx < sections.size(); sIdx++) {
+                        YouTubeMusicClient.HomeSection sec = sections.get(sIdx);
+                        addSectionHeader(sec.strapline, sec.title);
+
+                        // Section pertama di Home -> Kartu Vertikal Besar ("Top Picks for You")
+                        if (tabName.equals("HOME") && sIdx == 0) {
+                            addHeroCardsRow(sec.items);
+                        }
+                        // Section kedua di Home -> Grid 4 Baris Geser Horizontal ("Terbaru / Quick Picks")
+                        else if (tabName.equals("HOME") && sIdx == 1) {
+                            addStackedSongGrid(sec.items);
+                        }
+                        // Section lainnya -> Kartu Kotak Geser Horizontal ("Dengarkan lagi", "Your Playlists", dll)
+                        else {
+                            addSquareCardsRow(sec.items);
+                        }
+                    }
+                });
+            } catch (Exception e) {
+                uiHandler.post(() -> loadingTv.setText("Gagal memuat: " + e.getMessage()));
+            }
+        });
+    }
+
+    private void addSectionHeader(String strapline, String title) {
+        if (strapline != null && !strapline.isEmpty()) {
+            TextView strapTv = new TextView(this);
+            strapTv.setText(strapline.toUpperCase(Locale.getDefault()));
+            strapTv.setTextColor(Color.parseColor("#94A3B8"));
+            strapTv.setTextSize(11);
+            strapTv.setTypeface(null, Typeface.BOLD);
+            strapTv.setPadding(0, dp(10), 0, dp(2));
+            feedContainer.addView(strapTv);
+        }
+
+        TextView titleTv = new TextView(this);
+        titleTv.setText(title);
+        titleTv.setTextColor(Color.WHITE);
+        titleTv.setTextSize(20);
+        titleTv.setTypeface(null, Typeface.BOLD);
+        titleTv.setPadding(0, (strapline == null || strapline.isEmpty()) ? dp(12) : 0, 0, dp(12));
+        feedContainer.addView(titleTv);
+    }
+
+    // Kartu Vertikal Besar ("Top Picks for You") persis seperti screenshot 1
+    private void addHeroCardsRow(List<YouTubeMusicClient.Song> items) {
+        HorizontalScrollView hsv = new HorizontalScrollView(this);
+        hsv.setHorizontalScrollBarEnabled(false);
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+
+        for (YouTubeMusicClient.Song item : items) {
+            FrameLayout card = new FrameLayout(this);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(235), dp(315));
+            lp.setMargins(0, 0, dp(14), dp(14));
+            card.setLayoutParams(lp);
+            applySpringTouch(card);
+
+            ImageView img = new ImageView(this);
+            img.setScaleType(ImageView.ScaleType.CENTER_CROP);
+            img.setBackgroundColor(Color.parseColor("#1E293B"));
+            roundView(img, dp(22));
+            Glide.with(this).load(item.thumbnail).into(img);
+            card.addView(img, new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+            // Gradien Gelap di Bawah Kartu
+            View scrim = new View(this);
+            GradientDrawable scrimGrad = new GradientDrawable(
+                    GradientDrawable.Orientation.TOP_BOTTOM,
+                    new int[]{Color.TRANSPARENT, Color.parseColor("#66000000"), Color.parseColor("#EE000000")});
+            scrimGrad.setCornerRadius(dp(22));
+            scrim.setBackground(scrimGrad);
+            card.addView(scrim, new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+            // Teks di Bawah Kartu
+            LinearLayout textBox = new LinearLayout(this);
+            textBox.setOrientation(LinearLayout.VERTICAL);
+            textBox.setGravity(Gravity.BOTTOM);
+            textBox.setPadding(dp(16), dp(16), dp(16), dp(18));
+
+            TextView sub = new TextView(this);
+            sub.setText(item.subtitle);
+            sub.setTextColor(Color.parseColor("#CBD5E1"));
+            sub.setTextSize(12);
+            sub.setSingleLine(true);
+
+            TextView tit = new TextView(this);
+            tit.setText(item.title);
+            tit.setTextColor(Color.WHITE);
+            tit.setTextSize(19);
+            tit.setTypeface(null, Typeface.BOLD);
+            tit.setMaxLines(2);
+            tit.setEllipsize(TextUtils.TruncateAt.END);
+
+            textBox.addView(sub);
+            textBox.addView(tit);
+            card.addView(textBox, new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+            card.setOnClickListener(v -> handleItemClick(item, items));
+            row.addView(card);
+        }
+
+        hsv.addView(row);
+        feedContainer.addView(hsv);
+    }
+
+    // Grid 4 Baris Geser Horizontal ("Terbaru / Quick Picks") persis seperti screenshot 1 & 2
+    private void addStackedSongGrid(List<YouTubeMusicClient.Song> items) {
+        HorizontalScrollView hsv = new HorizontalScrollView(this);
+        hsv.setHorizontalScrollBarEnabled(false);
+        LinearLayout columnsRow = new LinearLayout(this);
+        columnsRow.setOrientation(LinearLayout.HORIZONTAL);
+
+        int rowsPerCol = 4;
+        for (int i = 0; i < items.size(); i += rowsPerCol) {
+            LinearLayout col = new LinearLayout(this);
+            col.setOrientation(LinearLayout.VERTICAL);
+            LinearLayout.LayoutParams colParams = new LinearLayout.LayoutParams(dp(300), ViewGroup.LayoutParams.WRAP_CONTENT);
+            colParams.setMargins(0, 0, dp(16), dp(12));
+            col.setLayoutParams(colParams);
+
+            for (int r = 0; r < rowsPerCol && (i + r) < items.size(); r++) {
+                YouTubeMusicClient.Song song = items.get(i + r);
+                col.addView(createCompactSongRow(song, items));
+            }
+            columnsRow.addView(col);
+        }
+
+        hsv.addView(columnsRow);
+        feedContainer.addView(hsv);
+    }
+
+    private LinearLayout createCompactSongRow(YouTubeMusicClient.Song song, List<YouTubeMusicClient.Song> contextList) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(0, dp(6), dp(6), dp(6));
+        applySpringTouch(row);
+
+        ImageView thumb = new ImageView(this);
+        thumb.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        thumb.setBackgroundColor(Color.parseColor("#1E2430"));
+        roundView(thumb, dp(10));
+        Glide.with(this).load(song.thumbnail).into(thumb);
+        row.addView(thumb, new LinearLayout.LayoutParams(dp(52), dp(52)));
+
+        LinearLayout info = new LinearLayout(this);
+        info.setOrientation(LinearLayout.VERTICAL);
+        info.setPadding(dp(12), 0, dp(8), 0);
+
+        TextView tit = new TextView(this);
+        tit.setText(song.title);
+        tit.setTextColor(Color.WHITE);
+        tit.setTextSize(15);
+        tit.setTypeface(null, Typeface.BOLD);
+        tit.setSingleLine(true);
+        tit.setEllipsize(TextUtils.TruncateAt.END);
+
+        TextView sub = new TextView(this);
+        sub.setText(song.subtitle);
+        sub.setTextColor(Color.parseColor("#94A3B8"));
+        sub.setTextSize(13);
+        sub.setSingleLine(true);
+        sub.setEllipsize(TextUtils.TruncateAt.END);
+
+        info.addView(tit);
+        info.addView(sub);
+        row.addView(info, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        TextView dots = new TextView(this);
+        dots.setText("⋮");
+        dots.setTextColor(Color.parseColor("#94A3B8"));
+        dots.setTextSize(18);
+        row.addView(dots);
+
+        row.setOnClickListener(v -> handleItemClick(song, contextList));
+        return row;
+    }
+
+    // Kartu Kotak Geser Horizontal ("Dengarkan lagi", "Your Playlists", dll) persis seperti screenshot 2
+    private void addSquareCardsRow(List<YouTubeMusicClient.Song> items) {
+        HorizontalScrollView hsv = new HorizontalScrollView(this);
+        hsv.setHorizontalScrollBarEnabled(false);
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+
+        for (YouTubeMusicClient.Song item : items) {
+            LinearLayout card = new LinearLayout(this);
+            card.setOrientation(LinearLayout.VERTICAL);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(152), ViewGroup.LayoutParams.WRAP_CONTENT);
+            lp.setMargins(0, 0, dp(14), dp(16));
+            card.setLayoutParams(lp);
+            applySpringTouch(card);
+
+            ImageView img = new ImageView(this);
+            img.setScaleType(ImageView.ScaleType.CENTER_CROP);
+            img.setBackgroundColor(Color.parseColor("#1E2430"));
+            roundView(img, dp(16));
+            Glide.with(this).load(item.thumbnail).into(img);
+            card.addView(img, new LinearLayout.LayoutParams(dp(152), dp(152)));
+
+            TextView tit = new TextView(this);
+            tit.setText(item.title);
+            tit.setTextColor(Color.WHITE);
+            tit.setTextSize(14);
+            tit.setTypeface(null, Typeface.BOLD);
+            tit.setSingleLine(true);
+            tit.setEllipsize(TextUtils.TruncateAt.END);
+            tit.setPadding(0, dp(8), 0, dp(2));
+
+            TextView sub = new TextView(this);
+            sub.setText(item.subtitle);
+            sub.setTextColor(Color.parseColor("#94A3B8"));
+            sub.setTextSize(12);
+            sub.setSingleLine(true);
+            sub.setEllipsize(TextUtils.TruncateAt.END);
+
+            card.addView(tit);
+            card.addView(sub);
+            card.setOnClickListener(v -> handleItemClick(item, items));
+            row.addView(card);
+        }
+
+        hsv.addView(row);
+        feedContainer.addView(hsv);
+    }
+
+    private void handleItemClick(YouTubeMusicClient.Song item, List<YouTubeMusicClient.Song> parentList) {
+        if (item.isPlaylist || item.videoId.isEmpty()) {
+            openPlaylistDetail(item);
+        } else {
+            activeQueue.clear();
+            for (YouTubeMusicClient.Song s : parentList) {
+                if (!s.videoId.isEmpty()) activeQueue.add(s);
+            }
+            int idx = activeQueue.indexOf(item);
+            if (idx < 0) {
+                activeQueue.add(0, item);
+                idx = 0;
+            }
+            playSongAt(idx);
+        }
+    }
+
+    // Membuka Isi Playlist / Album saat diklik
+    private LinearLayout buildPlaylistDetailOverlay() {
+        LinearLayout sheet = new LinearLayout(this);
+        sheet.setOrientation(LinearLayout.VERTICAL);
+        sheet.setPadding(dp(18), dp(48), dp(18), 0);
+        sheet.setClickable(true);
+        sheet.setBackgroundColor(Color.parseColor("#FA07080B"));
+
+        LinearLayout topBar = new LinearLayout(this);
+        topBar.setOrientation(LinearLayout.HORIZONTAL);
+        topBar.setGravity(Gravity.CENTER_VERTICAL);
+        topBar.setPadding(0, 0, 0, dp(16));
+
+        TextView backBtn = new TextView(this);
+        backBtn.setText("‹");
+        backBtn.setTextColor(Color.WHITE);
+        backBtn.setTextSize(28);
+        backBtn.setPadding(dp(6), 0, dp(14), 0);
+        backBtn.setOnClickListener(v -> playlistDetailOverlay.setVisibility(View.GONE));
+
+        playlistHeaderTitle = new TextView(this);
+        playlistHeaderTitle.setText("Playlist");
+        playlistHeaderTitle.setTextColor(Color.WHITE);
+        playlistHeaderTitle.setTextSize(20);
+        playlistHeaderTitle.setTypeface(null, Typeface.BOLD);
+        playlistHeaderTitle.setSingleLine(true);
+
+        topBar.addView(backBtn);
+        topBar.addView(playlistHeaderTitle);
+        sheet.addView(topBar);
+
+        ScrollView sv = new ScrollView(this);
+        playlistSongsContainer = new LinearLayout(this);
+        playlistSongsContainer.setOrientation(LinearLayout.VERTICAL);
+        playlistSongsContainer.setPadding(0, 0, 0, dp(170));
+        sv.addView(playlistSongsContainer);
+        sheet.addView(sv, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+
+        return sheet;
+    }
+
+    private void openPlaylistDetail(YouTubeMusicClient.Song playlistItem) {
+        playlistHeaderTitle.setText(playlistItem.title);
+        playlistSongsContainer.removeAllViews();
+        playlistDetailOverlay.setVisibility(View.VISIBLE);
+
+        TextView loading = new TextView(this);
+        loading.setText("Memuat daftar lagu playlist...");
+        loading.setTextColor(Color.parseColor("#94A3B8"));
+        playlistSongsContainer.addView(loading);
+
+        executor.execute(() -> {
+            try {
+                List<YouTubeMusicClient.HomeSection> secs = YouTubeMusicClient.getBrowseSections(playlistItem.browseId);
+                List<YouTubeMusicClient.Song> tracks = new ArrayList<>();
+                for (YouTubeMusicClient.HomeSection s : secs) {
+                    for (YouTubeMusicClient.Song song : s.items) {
+                        if (!song.videoId.isEmpty()) tracks.add(song);
+                    }
+                }
+                uiHandler.post(() -> {
+                    playlistSongsContainer.removeAllViews();
+                    if (tracks.isEmpty()) {
+                        loading.setText("Tidak ada lagu ditemukan di playlist ini.");
+                        playlistSongsContainer.addView(loading);
+                        return;
+                    }
+                    for (YouTubeMusicClient.Song t : tracks) {
+                        playlistSongsContainer.addView(createCompactSongRow(t, tracks));
+                    }
+                });
+            } catch (Exception e) {
+                uiHandler.post(() -> loading.setText("Error: " + e.getMessage()));
+            }
+        });
+    }
+
+    // Overlay Pencarian saat Tombol Kaca Pembesar Kanan Bawah diklik
+    private LinearLayout buildSearchOverlay() {
+        LinearLayout container = new LinearLayout(this);
+        container.setOrientation(LinearLayout.VERTICAL);
+        container.setPadding(dp(18), dp(48), dp(18), 0);
+        container.setClickable(true);
+        container.setBackgroundColor(Color.parseColor("#F507080B"));
+
         LinearLayout searchPill = new LinearLayout(this);
         searchPill.setOrientation(LinearLayout.HORIZONTAL);
         searchPill.setGravity(Gravity.CENTER_VERTICAL);
         searchPill.setPadding(dp(16), dp(4), dp(8), dp(4));
         searchPill.setBackground(createGlassSurface(
-                Color.parseColor("#1FFFFFFF"), Color.parseColor("#45FFFFFF"), dp(28)));
+                Color.parseColor("#24FFFFFF"), Color.parseColor("#4DFFFFFF"), dp(28)));
 
         EditText searchInput = new EditText(this);
-        searchInput.setHint("Cari lagu, artis, atau album...");
+        searchInput.setHint("Cari lagu, artis, atau album di YT Music...");
         searchInput.setHintTextColor(Color.parseColor("#94A3B8"));
         searchInput.setTextColor(Color.WHITE);
         searchInput.setTextSize(14);
@@ -203,11 +612,9 @@ public class MainActivity extends AppCompatActivity {
         searchBtn.setTextColor(Color.WHITE);
         searchBtn.setTextSize(13);
         searchBtn.setTypeface(null, Typeface.BOLD);
-        searchBtn.setGravity(Gravity.CENTER);
         searchBtn.setPadding(dp(16), dp(8), dp(16), dp(8));
         searchBtn.setBackground(createGlassSurface(
                 Color.parseColor("#38FFFFFF"), Color.parseColor("#66FFFFFF"), dp(22)));
-        applySpringTouch(searchBtn);
 
         searchInput.setOnEditorActionListener((v, actionId, event) -> {
             if (actionId == EditorInfo.IME_ACTION_SEARCH) {
@@ -222,28 +629,177 @@ public class MainActivity extends AppCompatActivity {
         searchPill.addView(searchBtn);
         container.addView(searchPill);
 
-        // Song RecyclerView
-        RecyclerView recyclerView = new RecyclerView(this);
-        recyclerView.setLayoutManager(new LinearLayoutManager(this));
-        recyclerView.setClipToPadding(false);
-        recyclerView.setPadding(0, dp(14), 0, dp(110));
-        adapter = new SongAdapter();
-        recyclerView.setAdapter(adapter);
-        container.addView(recyclerView, new LinearLayout.LayoutParams(
+        RecyclerView rv = new RecyclerView(this);
+        rv.setLayoutManager(new LinearLayoutManager(this));
+        rv.setClipToPadding(false);
+        rv.setPadding(0, dp(14), 0, dp(170));
+        searchAdapter = new SongListAdapter();
+        rv.setAdapter(searchAdapter);
+        container.addView(rv, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
         return container;
     }
 
-    // Halaman Pengaturan dengan Bagian "Pengaturan Akun -> Login dengan token" di Atas
+    private void performSearch(String query) {
+        if (query.isEmpty()) return;
+        Toast.makeText(this, "Mencari...", Toast.LENGTH_SHORT).show();
+        executor.execute(() -> {
+            try {
+                List<YouTubeMusicClient.Song> results = YouTubeMusicClient.searchSongs(query);
+                uiHandler.post(() -> {
+                    searchResults.clear();
+                    searchResults.addAll(results);
+                    searchAdapter.notifyDataSetChanged();
+                });
+            } catch (Exception e) {
+                uiHandler.post(() -> Toast.makeText(this, "Gagal mencari: " + e.getMessage(), Toast.LENGTH_SHORT).show());
+            }
+        });
+    }
+
+    // Bottom Dock: Mini Player + Kapsul Navigasi Kaca (Home, Explore, Library) + Tombol Search Bulat
+    private LinearLayout buildBottomDock() {
+        LinearLayout dock = new LinearLayout(this);
+        dock.setOrientation(LinearLayout.VERTICAL);
+
+        // 1. Mini Player Card
+        miniPlayerCard = new LinearLayout(this);
+        miniPlayerCard.setOrientation(LinearLayout.HORIZONTAL);
+        miniPlayerCard.setGravity(Gravity.CENTER_VERTICAL);
+        miniPlayerCard.setPadding(dp(10), dp(8), dp(14), dp(8));
+        miniPlayerCard.setElevation(dp(14));
+        miniPlayerCard.setBackground(createGlassSurface(
+                Color.parseColor("#E616171C"), Color.parseColor("#3DFFFFFF"), dp(22)));
+        applySpringTouch(miniPlayerCard);
+
+        miniCover = new ImageView(this);
+        miniCover.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        miniCover.setBackgroundColor(Color.parseColor("#2A303C"));
+        roundView(miniCover, dp(12));
+        miniPlayerCard.addView(miniCover, new LinearLayout.LayoutParams(dp(44), dp(44)));
+
+        LinearLayout infoCol = new LinearLayout(this);
+        infoCol.setOrientation(LinearLayout.VERTICAL);
+        infoCol.setPadding(dp(12), 0, dp(8), 0);
+
+        miniTitle = new TextView(this);
+        miniTitle.setText("Pilih lagu untuk memutar");
+        miniTitle.setTextColor(Color.WHITE);
+        miniTitle.setTextSize(14);
+        miniTitle.setTypeface(null, Typeface.BOLD);
+        miniTitle.setSingleLine(true);
+        miniTitle.setEllipsize(TextUtils.TruncateAt.END);
+
+        miniArtist = new TextView(this);
+        miniArtist.setText("YouTube Music");
+        miniArtist.setTextColor(Color.parseColor("#94A3B8"));
+        miniArtist.setTextSize(12);
+        miniArtist.setSingleLine(true);
+        miniArtist.setEllipsize(TextUtils.TruncateAt.END);
+
+        infoCol.addView(miniTitle);
+        infoCol.addView(miniArtist);
+        miniPlayerCard.addView(infoCol, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        miniPlayBtn = new TextView(this);
+        miniPlayBtn.setText("▶");
+        miniPlayBtn.setTextColor(Color.WHITE);
+        miniPlayBtn.setTextSize(20);
+        miniPlayBtn.setGravity(Gravity.CENTER);
+        miniPlayBtn.setOnClickListener(v -> togglePlayPause());
+        miniPlayerCard.addView(miniPlayBtn, new LinearLayout.LayoutParams(dp(38), dp(38)));
+
+        miniNextBtn = new TextView(this);
+        miniNextBtn.setText("⏩");
+        miniNextBtn.setTextColor(Color.WHITE);
+        miniNextBtn.setTextSize(18);
+        miniNextBtn.setGravity(Gravity.CENTER);
+        miniNextBtn.setOnClickListener(v -> playNext());
+        miniPlayerCard.addView(miniNextBtn, new LinearLayout.LayoutParams(dp(38), dp(38)));
+
+        miniPlayerCard.setOnClickListener(v -> openFullPlayer());
+        LinearLayout.LayoutParams miniLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        miniLp.setMargins(0, 0, 0, dp(10));
+        dock.addView(miniPlayerCard, miniLp);
+
+        // 2. Navigation Bar Row (Pill [Home | Explore | Library] + Circle [Search])
+        LinearLayout navRow = new LinearLayout(this);
+        navRow.setOrientation(LinearLayout.HORIZONTAL);
+        navRow.setGravity(Gravity.CENTER_VERTICAL);
+
+        LinearLayout pillGroup = new LinearLayout(this);
+        pillGroup.setOrientation(LinearLayout.HORIZONTAL);
+        pillGroup.setPadding(dp(6), dp(6), dp(6), dp(6));
+        pillGroup.setBackground(createGlassSurface(
+                Color.parseColor("#EB16171C"), Color.parseColor("#44FFFFFF"), dp(32)));
+
+        navHomeBtn = createNavTabItem("⌂\nHome");
+        navExploreBtn = createNavTabItem("⊞\nExplore");
+        navLibraryBtn = createNavTabItem("▤\nLibrary");
+
+        navHomeBtn.setOnClickListener(v -> loadFeedTab("HOME", "FEmusic_home"));
+        navExploreBtn.setOnClickListener(v -> loadFeedTab("EXPLORE", "FEmusic_explore"));
+        navLibraryBtn.setOnClickListener(v -> loadFeedTab("LIBRARY", "FEmusic_liked_playlists"));
+
+        pillGroup.addView(navHomeBtn, new LinearLayout.LayoutParams(0, dp(48), 1f));
+        pillGroup.addView(navExploreBtn, new LinearLayout.LayoutParams(0, dp(48), 1f));
+        pillGroup.addView(navLibraryBtn, new LinearLayout.LayoutParams(0, dp(48), 1f));
+
+        LinearLayout.LayoutParams pillLp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        pillLp.setMargins(0, 0, dp(10), 0);
+        navRow.addView(pillGroup, pillLp);
+
+        // Circle Search Button di Kanan Bawah
+        navSearchBtn = new TextView(this);
+        navSearchBtn.setText("🔍");
+        navSearchBtn.setTextColor(Color.WHITE);
+        navSearchBtn.setTextSize(20);
+        navSearchBtn.setGravity(Gravity.CENTER);
+        navSearchBtn.setBackground(createGlassSurface(
+                Color.parseColor("#EB16171C"), Color.parseColor("#44FFFFFF"), dp(30)));
+        applySpringTouch(navSearchBtn);
+        navSearchBtn.setOnClickListener(v -> {
+            activeTab = "SEARCH";
+            updateNavPillStyles();
+            playlistDetailOverlay.setVisibility(View.GONE);
+            searchOverlay.setVisibility(View.VISIBLE);
+        });
+        navRow.addView(navSearchBtn, new LinearLayout.LayoutParams(dp(60), dp(60)));
+
+        dock.addView(navRow);
+        return dock;
+    }
+
+    private TextView createNavTabItem(String label) {
+        TextView tv = new TextView(this);
+        tv.setText(label);
+        tv.setTextColor(Color.WHITE);
+        tv.setTextSize(11);
+        tv.setGravity(Gravity.CENTER);
+        tv.setLineSpacing(0, 0.95f);
+        return tv;
+    }
+
+    private void updateNavPillStyles() {
+        Drawable activePill = createGlassSurface(Color.parseColor("#33FFFFFF"), Color.parseColor("#55FFFFFF"), dp(24));
+        navHomeBtn.setBackground(activeTab.equals("HOME") ? activePill : null);
+        navExploreBtn.setBackground(activeTab.equals("EXPLORE") ? activePill : null);
+        navLibraryBtn.setBackground(activeTab.equals("LIBRARY") ? activePill : null);
+        navSearchBtn.setBackground(createGlassSurface(
+                activeTab.equals("SEARCH") ? Color.parseColor("#3DFFFFFF") : Color.parseColor("#EB16171C"),
+                Color.parseColor("#44FFFFFF"), dp(30)));
+    }
+
+    // Halaman Pengaturan -> Pengaturan Akun -> Login dengan token
     private LinearLayout buildSettingsSheet() {
         LinearLayout sheet = new LinearLayout(this);
         sheet.setOrientation(LinearLayout.VERTICAL);
         sheet.setPadding(dp(20), dp(48), dp(20), dp(24));
         sheet.setClickable(true);
-        sheet.setBackgroundColor(Color.parseColor("#FA0B0E14"));
+        sheet.setBackgroundColor(Color.parseColor("#FA07080B"));
 
-        // Top Bar Pengaturan (< Pengaturan)
         LinearLayout topBar = new LinearLayout(this);
         topBar.setOrientation(LinearLayout.HORIZONTAL);
         topBar.setGravity(Gravity.CENTER_VERTICAL);
@@ -267,7 +823,6 @@ public class MainActivity extends AppCompatActivity {
         topBar.addView(title);
         sheet.addView(topBar);
 
-        // Section Header: PENGATURAN AKUN
         TextView sectionLabel = new TextView(this);
         sectionLabel.setText("PENGATURAN AKUN");
         sectionLabel.setTextColor(Color.parseColor("#94A3B8"));
@@ -276,13 +831,11 @@ public class MainActivity extends AppCompatActivity {
         sectionLabel.setPadding(dp(8), 0, 0, dp(10));
         sheet.addView(sectionLabel);
 
-        // Kartu Liquid Glass untuk Pengaturan Akun
         LinearLayout accountCard = new LinearLayout(this);
         accountCard.setOrientation(LinearLayout.VERTICAL);
         accountCard.setBackground(createGlassSurface(
                 Color.parseColor("#18FFFFFF"), Color.parseColor("#33FFFFFF"), dp(22)));
 
-        // Item 1: Login dengan token
         LinearLayout tokenRow = new LinearLayout(this);
         tokenRow.setOrientation(LinearLayout.HORIZONTAL);
         tokenRow.setGravity(Gravity.CENTER_VERTICAL);
@@ -324,7 +877,6 @@ public class MainActivity extends AppCompatActivity {
 
         accountCard.addView(tokenRow);
 
-        // Item 2: Logout / Hapus Token (muncul jika sudah login)
         logoutRowBtn = new TextView(this);
         logoutRowBtn.setText("Hapus token & keluar akun");
         logoutRowBtn.setTextColor(Color.parseColor("#F87171"));
@@ -335,23 +887,21 @@ public class MainActivity extends AppCompatActivity {
         logoutRowBtn.setOnClickListener(v -> {
             YouTubeMusicClient.saveToken(this, "");
             refreshAccountState();
+            loadFeedTab("HOME", "FEmusic_home");
             Toast.makeText(this, "Token dihapus", Toast.LENGTH_SHORT).show();
         });
         accountCard.addView(logoutRowBtn);
 
         sheet.addView(accountCard);
-
         return sheet;
     }
 
-    // Dialog Login dengan Token persis seperti contoh Metrolist / ArchiveTune
     private void showTokenLoginDialog() {
         AlertDialog.Builder builder = new AlertDialog.Builder(this);
         AlertDialog dialog = builder.create();
-                if (dialog.getWindow() != null) {
-            dialog.getWindow().setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(Color.TRANSPARENT));
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
         }
-
 
         LinearLayout dialogCard = new LinearLayout(this);
         dialogCard.setOrientation(LinearLayout.VERTICAL);
@@ -359,7 +909,6 @@ public class MainActivity extends AppCompatActivity {
         dialogCard.setBackground(createGlassSurface(
                 Color.parseColor("#F222242A"), Color.parseColor("#44FFFFFF"), dp(24)));
 
-        // Kotak Input Token Monospace dengan Border Putih Tipis
         EditText tokenInput = new EditText(this);
         tokenInput.setHint("***INNERTUBE COOKIE***\n=__Secure-1PSIDTS=...; SAPISID=...; __Secure-3PAPISID=...");
         tokenInput.setHintTextColor(Color.parseColor("#64748B"));
@@ -381,7 +930,6 @@ public class MainActivity extends AppCompatActivity {
         dialogCard.addView(tokenInput, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        // Baris Penjelasan dengan Ikon (i)
         LinearLayout infoRow = new LinearLayout(this);
         infoRow.setOrientation(LinearLayout.HORIZONTAL);
         infoRow.setGravity(Gravity.CENTER_VERTICAL);
@@ -408,7 +956,6 @@ public class MainActivity extends AppCompatActivity {
 
         dialogCard.addView(infoRow);
 
-        // Tombol Batal & Oke di Kanan Bawah
         LinearLayout btnRow = new LinearLayout(this);
         btnRow.setOrientation(LinearLayout.HORIZONTAL);
         btnRow.setGravity(Gravity.END);
@@ -436,7 +983,8 @@ public class MainActivity extends AppCompatActivity {
                 return;
             }
             refreshAccountState();
-            Toast.makeText(this, "Token berhasil disimpan!", Toast.LENGTH_SHORT).show();
+            loadFeedTab("HOME", "FEmusic_home");
+            Toast.makeText(this, "Token berhasil disimpan! Memuat feed akun...", Toast.LENGTH_SHORT).show();
             dialog.dismiss();
         });
 
@@ -451,19 +999,24 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void refreshAccountState() {
+        if (profileIconBtn == null) return;
         boolean loggedIn = YouTubeMusicClient.isLoggedIn();
         if (loggedIn) {
             profileIconBtn.setBackground(createGlassSurface(
-                    Color.parseColor("#3310B981"), Color.parseColor("#34D399"), dp(21)));
-            accountStatusText.setText("Terhubung via InnerTube Cookie • Aktif");
-            accountStatusText.setTextColor(Color.parseColor("#34D399"));
-            logoutRowBtn.setVisibility(View.VISIBLE);
+                    Color.parseColor("#33F43F5E"), Color.parseColor("#F43F5E"), dp(21)));
+            if (accountStatusText != null) {
+                accountStatusText.setText("Terhubung via InnerTube Cookie • Aktif");
+                accountStatusText.setTextColor(Color.parseColor("#34D399"));
+            }
+            if (logoutRowBtn != null) logoutRowBtn.setVisibility(View.VISIBLE);
         } else {
             profileIconBtn.setBackground(createGlassSurface(
                     Color.parseColor("#26FFFFFF"), Color.parseColor("#55FFFFFF"), dp(21)));
-            accountStatusText.setText("Belum login • Ketuk untuk memasukkan InnerTube Cookie");
-            accountStatusText.setTextColor(Color.parseColor("#94A3B8"));
-            logoutRowBtn.setVisibility(View.GONE);
+            if (accountStatusText != null) {
+                accountStatusText.setText("Belum login • Ketuk untuk memasukkan InnerTube Cookie");
+                accountStatusText.setTextColor(Color.parseColor("#94A3B8"));
+            }
+            if (logoutRowBtn != null) logoutRowBtn.setVisibility(View.GONE);
         }
     }
 
@@ -478,77 +1031,13 @@ public class MainActivity extends AppCompatActivity {
                 .withEndAction(() -> settingsSheet.setVisibility(View.GONE)).start();
     }
 
-    private LinearLayout buildMiniPlayer() {
-        LinearLayout card = new LinearLayout(this);
-        card.setOrientation(LinearLayout.HORIZONTAL);
-        card.setGravity(Gravity.CENTER_VERTICAL);
-        card.setPadding(dp(12), dp(10), dp(14), dp(10));
-        card.setElevation(dp(16));
-        card.setBackground(createGlassSurface(
-                Color.parseColor("#CC181C24"), Color.parseColor("#55FFFFFF"), dp(26)));
-        applySpringTouch(card);
-
-        miniCover = new ImageView(this);
-        miniCover.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        miniCover.setBackgroundColor(Color.parseColor("#2A303C"));
-        roundImageView(miniCover, dp(14));
-        card.addView(miniCover, new LinearLayout.LayoutParams(dp(46), dp(46)));
-
-        LinearLayout infoCol = new LinearLayout(this);
-        infoCol.setOrientation(LinearLayout.VERTICAL);
-        infoCol.setPadding(dp(12), 0, dp(8), 0);
-
-        miniTitle = new TextView(this);
-        miniTitle.setText("Pilih lagu untuk memutar");
-        miniTitle.setTextColor(Color.WHITE);
-        miniTitle.setTextSize(14);
-        miniTitle.setTypeface(null, Typeface.BOLD);
-        miniTitle.setSingleLine(true);
-        miniTitle.setEllipsize(TextUtils.TruncateAt.END);
-
-        miniArtist = new TextView(this);
-        miniArtist.setText("Liquid Glass Player");
-        miniArtist.setTextColor(Color.parseColor("#CBD5E1"));
-        miniArtist.setTextSize(12);
-        miniArtist.setSingleLine(true);
-        miniArtist.setEllipsize(TextUtils.TruncateAt.END);
-
-        infoCol.addView(miniTitle);
-        infoCol.addView(miniArtist);
-        card.addView(infoCol, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-
-        miniPlayBtn = new TextView(this);
-        miniPlayBtn.setText("▶");
-        miniPlayBtn.setTextColor(Color.WHITE);
-        miniPlayBtn.setTextSize(18);
-        miniPlayBtn.setGravity(Gravity.CENTER);
-        miniPlayBtn.setBackground(createGlassSurface(
-                Color.parseColor("#2EFFFFFF"), Color.parseColor("#55FFFFFF"), dp(20)));
-        miniPlayBtn.setOnClickListener(v -> togglePlayPause());
-        card.addView(miniPlayBtn, new LinearLayout.LayoutParams(dp(40), dp(40)));
-
-        miniNextBtn = new TextView(this);
-        miniNextBtn.setText("⏭");
-        miniNextBtn.setTextColor(Color.WHITE);
-        miniNextBtn.setTextSize(16);
-        miniNextBtn.setGravity(Gravity.CENTER);
-        LinearLayout.LayoutParams nextParams = new LinearLayout.LayoutParams(dp(36), dp(40));
-        nextParams.setMargins(dp(6), 0, 0, 0);
-        miniNextBtn.setOnClickListener(v -> playNext());
-        card.addView(miniNextBtn, nextParams);
-
-        card.setOnClickListener(v -> openFullPlayer());
-
-        return card;
-    }
-
     private LinearLayout buildFullPlayerSheet() {
         LinearLayout sheet = new LinearLayout(this);
         sheet.setOrientation(LinearLayout.VERTICAL);
         sheet.setGravity(Gravity.CENTER_HORIZONTAL);
         sheet.setPadding(dp(26), dp(48), dp(26), dp(36));
         sheet.setClickable(true);
-        sheet.setBackgroundColor(Color.parseColor("#F20B0E14"));
+        sheet.setBackgroundColor(Color.parseColor("#F507080B"));
 
         View dragPill = new View(this);
         dragPill.setBackground(createGlassSurface(
@@ -579,7 +1068,7 @@ public class MainActivity extends AppCompatActivity {
         fullCover = new ImageView(this);
         fullCover.setScaleType(ImageView.ScaleType.CENTER_CROP);
         fullCover.setBackgroundColor(Color.parseColor("#1E2430"));
-        roundImageView(fullCover, dp(24));
+        roundView(fullCover, dp(24));
         artWrapper.addView(fullCover, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
@@ -692,32 +1181,15 @@ public class MainActivity extends AppCompatActivity {
         return sheet;
     }
 
-    private void performSearch(String query) {
-        if (query.isEmpty()) return;
-        executor.execute(() -> {
-            try {
-                List<YouTubeMusicClient.Song> results = YouTubeMusicClient.searchSongs(query);
-                uiHandler.post(() -> {
-                    songList.clear();
-                    songList.addAll(results);
-                    adapter.notifyDataSetChanged();
-                });
-            } catch (Exception e) {
-                uiHandler.post(() -> Toast.makeText(this, "Gagal mencari: " + e.getMessage(), Toast.LENGTH_SHORT).show());
-            }
-        });
-    }
-
     private void playSongAt(int index) {
-        if (index < 0 || index >= songList.size()) return;
+        if (index < 0 || index >= activeQueue.size()) return;
         currentIndex = index;
-        YouTubeMusicClient.Song song = songList.get(index);
+        YouTubeMusicClient.Song song = activeQueue.get(index);
 
         miniTitle.setText("Memuat: " + song.title);
-        miniArtist.setText(song.artist);
+        miniArtist.setText(song.subtitle);
         fullTitle.setText(song.title);
-        fullArtist.setText(song.artist);
-        adapter.notifyDataSetChanged();
+        fullArtist.setText(song.subtitle);
 
         Glide.with(this).asBitmap().load(song.thumbnail).into(new CustomTarget<Bitmap>() {
             @Override
@@ -727,7 +1199,7 @@ public class MainActivity extends AppCompatActivity {
                 Palette.from(resource).generate(palette -> {
                     if (palette != null) {
                         int vibrant = palette.getDarkVibrantColor(
-                                palette.getDominantColor(Color.parseColor("#1E3A5F")));
+                                palette.getDominantColor(Color.parseColor("#18181B")));
                         animateAmbientColor(currentAccentColor, vibrant);
                         currentAccentColor = vibrant;
                     }
@@ -753,7 +1225,7 @@ public class MainActivity extends AppCompatActivity {
                     if (mediaController == null) return;
                     MediaMetadata metadata = new MediaMetadata.Builder()
                             .setTitle(song.title)
-                            .setArtist(song.artist)
+                            .setArtist(song.subtitle)
                             .setArtworkUri(Uri.parse(song.thumbnail))
                             .build();
 
@@ -783,14 +1255,14 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void playNext() {
-        if (!songList.isEmpty()) {
-            playSongAt((currentIndex + 1) % songList.size());
+        if (!activeQueue.isEmpty()) {
+            playSongAt((currentIndex + 1) % activeQueue.size());
         }
     }
 
     private void playPrevious() {
-        if (!songList.isEmpty()) {
-            int prev = (currentIndex - 1 < 0) ? songList.size() - 1 : currentIndex - 1;
+        if (!activeQueue.isEmpty()) {
+            int prev = (currentIndex - 1 < 0) ? activeQueue.size() - 1 : currentIndex - 1;
             playSongAt(prev);
         }
     }
@@ -860,13 +1332,13 @@ public class MainActivity extends AppCompatActivity {
     private void updateAmbientColors(int topColor) {
         GradientDrawable grad = new GradientDrawable(
                 GradientDrawable.Orientation.TOP_BOTTOM,
-                new int[]{topColor, Color.parseColor("#0D1117"), Color.parseColor("#090B0E")});
+                new int[]{topColor, Color.parseColor("#08080A"), Color.parseColor("#050507")});
         ambientBackdrop.setBackground(grad);
 
         if (fullPlayerSheet != null) {
             GradientDrawable sheetGrad = new GradientDrawable(
                     GradientDrawable.Orientation.TOP_BOTTOM,
-                    new int[]{topColor, Color.parseColor("#090B0E")});
+                    new int[]{topColor, Color.parseColor("#050507")});
             fullPlayerSheet.setBackground(sheetGrad);
         }
     }
@@ -900,14 +1372,14 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
-    private void roundImageView(ImageView iv, int radiusPx) {
-        iv.setOutlineProvider(new ViewOutlineProvider() {
+    private void roundView(View v, int radiusPx) {
+        v.setOutlineProvider(new ViewOutlineProvider() {
             @Override
             public void getOutline(View view, Outline outline) {
                 outline.setRoundRect(0, 0, view.getWidth(), view.getHeight(), radiusPx);
             }
         });
-        iv.setClipToOutline(true);
+        v.setClipToOutline(true);
     }
 
     private String formatTime(long ms) {
@@ -927,12 +1399,16 @@ public class MainActivity extends AppCompatActivity {
             closeFullPlayer();
         } else if (settingsSheet.getVisibility() == View.VISIBLE) {
             closeSettings();
+        } else if (playlistDetailOverlay.getVisibility() == View.VISIBLE) {
+            playlistDetailOverlay.setVisibility(View.GONE);
+        } else if (searchOverlay.getVisibility() == View.VISIBLE) {
+            loadFeedTab("HOME", "FEmusic_home");
         } else {
             super.onBackPressed();
         }
     }
 
-    private class SongAdapter extends RecyclerView.Adapter<SongAdapter.ViewHolder> {
+    private class SongListAdapter extends RecyclerView.Adapter<SongListAdapter.ViewHolder> {
         @NonNull
         @Override
         public ViewHolder onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
@@ -949,7 +1425,7 @@ public class MainActivity extends AppCompatActivity {
             ImageView thumb = new ImageView(parent.getContext());
             thumb.setScaleType(ImageView.ScaleType.CENTER_CROP);
             thumb.setBackgroundColor(Color.parseColor("#1E2430"));
-            roundImageView(thumb, dp(12));
+            roundView(thumb, dp(12));
             card.addView(thumb, new LinearLayout.LayoutParams(dp(52), dp(52)));
 
             LinearLayout textCol = new LinearLayout(parent.getContext());
@@ -978,27 +1454,18 @@ public class MainActivity extends AppCompatActivity {
 
         @Override
         public void onBindViewHolder(@NonNull ViewHolder holder, int position) {
-            YouTubeMusicClient.Song song = songList.get(position);
-            boolean isCurrent = (position == currentIndex);
-
+            YouTubeMusicClient.Song song = searchResults.get(position);
             holder.card.setBackground(createGlassSurface(
-                    isCurrent ? Color.parseColor("#33FFFFFF") : Color.parseColor("#14FFFFFF"),
-                    isCurrent ? Color.parseColor("#66FFFFFF") : Color.parseColor("#22FFFFFF"),
-                    dp(20)));
-            holder.title.setTextColor(isCurrent ? Color.parseColor("#34D399") : Color.WHITE);
+                    Color.parseColor("#14FFFFFF"), Color.parseColor("#22FFFFFF"), dp(20)));
             holder.title.setText(song.title);
-            holder.artist.setText(song.artist);
-
-            Glide.with(holder.thumb.getContext())
-                    .load(song.thumbnail)
-                    .into(holder.thumb);
-
-            holder.card.setOnClickListener(v -> playSongAt(position));
+            holder.artist.setText(song.subtitle);
+            Glide.with(holder.thumb.getContext()).load(song.thumbnail).into(holder.thumb);
+            holder.card.setOnClickListener(v -> handleItemClick(song, searchResults));
         }
 
         @Override
         public int getItemCount() {
-            return songList.size();
+            return searchResults.size();
         }
 
         class ViewHolder extends RecyclerView.ViewHolder {

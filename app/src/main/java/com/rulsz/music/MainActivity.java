@@ -348,9 +348,10 @@ public class MainActivity extends AppCompatActivity {
     private void showTokenLoginDialog() {
         AlertDialog.Builder builder = new AlertDialog.Builder(this);
         AlertDialog dialog = builder.create();
-        if (dialog.getWindow() != null) {
-            dialog.getWindow().setBackgroundDrawableColor(Color.TRANSPARENT);
+                if (dialog.getWindow() != null) {
+            dialog.getWindow().setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(Color.TRANSPARENT));
         }
+
 
         LinearLayout dialogCard = new LinearLayout(this);
         dialogCard.setOrientation(LinearLayout.VERTICAL);

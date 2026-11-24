@@ -83,6 +83,11 @@ public class MainActivity extends AppCompatActivity {
     private LinearLayout playlistSongsContainer;
     private TextView playlistHeaderTitle;
 
+private MediaController mediaController;
+private ListenableFuture<MediaController> controllerFuture;
+private YouTubeMusicClient.Song pendingSong;
+private int playbackRequestId = 0;
+
     // Bottom Dock (Expanded Sonara Layout vs Compact Scroll Layout)
     private LinearLayout expandedDock;
     private LinearLayout compactDock;

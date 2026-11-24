@@ -87,6 +87,41 @@ private MediaController mediaController;
 private ListenableFuture<MediaController> controllerFuture;
 private YouTubeMusicClient.Song pendingSong;
 private int playbackRequestId = 0;
+    private final Runnable progressRunnable = new Runnable() {
+        @Override public void run() {
+            if (mediaController != null && mediaController.getMediaItemCount() > 0) {
+                long duration = mediaController.getDuration();
+                long position = mediaController.getCurrentPosition();
+                if (duration > 0 && !isSeeking && seekBar != null) {
+                    seekBar.setMax((int) Math.min(Integer.MAX_VALUE, duration));
+                    seekBar.setProgress((int) Math.min(Integer.MAX_VALUE, position));
+                    currentTimeText.setText(formatTime(position));
+                    totalTimeText.setText(formatTime(duration));
+                }
+            }
+            uiHandler.postDelayed(this, 500);
+        }
+    };
+
+    private final Player.Listener playbackListener = new Player.Listener() {
+        @Override public void onIsPlayingChanged(boolean isPlaying) {
+            isPlayingState = isPlaying;
+            updatePlaybackButtons(isPlaying);
+        }
+
+        @Override public void onPlaybackStateChanged(int state) {
+            if (state == Player.STATE_ENDED) {
+                playNext();
+            }
+        }
+
+        @Override public void onPlayerError(androidx.media3.common.PlaybackException error) {
+            isPlayingState = false;
+            updatePlaybackButtons(false);
+            Toast.makeText(MainActivity.this,
+                    "Gagal memutar audio: " + error.getMessage(), Toast.LENGTH_LONG).show();
+        }
+    };
 
     // Bottom Dock (Expanded Sonara Layout vs Compact Scroll Layout)
     private LinearLayout expandedDock;
@@ -106,11 +141,10 @@ private int playbackRequestId = 0;
     private ImageView compactCover, compactPlayBtn;
     private TextView compactTitle;
 
-    // Full Screen Now Playing Views & Official YouTube IFrame Player
+    // Full Screen Now Playing Views
     private LinearLayout fullPlayerSheet;
     private FrameLayout artWrapper;
     private ImageView fullCover, fullPlayBtn;
-    private YouTubeIFramePlayerView ytPlayerView;
     private TextView fullTitle, fullArtist, currentTimeText, totalTimeText;
     private SeekBar seekBar;
     private boolean isSeeking = false;
@@ -187,13 +221,15 @@ private int playbackRequestId = 0;
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
         fullPlayerSheet = buildFullPlayerSheet();
-        // Gunakan alpha=0 & translationY di luar layar (bukan View.GONE) agar WebView IFrame selalu aktif
+        // Pertahankan player sheet di hierarchy agar animasi buka/tutup tetap lancar
         fullPlayerSheet.setVisibility(View.VISIBLE);
         fullPlayerSheet.post(() -> fullPlayerSheet.setTranslationY(rootFrame.getHeight() + dp(100)));
         rootFrame.addView(fullPlayerSheet, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
         setContentView(rootFrame);
+        connectPlaybackService();
+        uiHandler.post(progressRunnable);
         refreshAccountState();
 
         if (YouTubeMusicClient.isLoggedIn()) {
@@ -1230,40 +1266,10 @@ private int playbackRequestId = 0;
         sheet.addView(topBar, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        // Bingkai Artwork + Official YouTube IFrame Player
+        // Artwork player. Audio diputar oleh ExoPlayer di PlaybackService.
         artWrapper = new FrameLayout(this);
         artWrapper.setElevation(dp(24));
         roundView(artWrapper, dp(24));
-
-        ytPlayerView = new YouTubeIFramePlayerView(this);
-        ytPlayerView.setPlayerCallback(new YouTubeIFramePlayerView.PlayerCallback() {
-            @Override
-            public void onStateChanged(boolean isPlaying) {
-                isPlayingState = isPlaying;
-                int iconRes = isPlaying ? R.drawable.ic_pause : R.drawable.ic_play;
-                miniPlayBtn.setImageResource(iconRes);
-                compactPlayBtn.setImageResource(iconRes);
-                fullPlayBtn.setImageResource(iconRes);
-                fullCover.setVisibility(isPlaying ? View.GONE : View.VISIBLE);
-            }
-
-            @Override
-            public void onProgress(long currentMs, long durationMs) {
-                if (!isSeeking && durationMs > 0) {
-                    seekBar.setMax((int) durationMs);
-                    seekBar.setProgress((int) currentMs);
-                    currentTimeText.setText(formatTime(currentMs));
-                    totalTimeText.setText(formatTime(durationMs));
-                }
-            }
-
-            @Override
-            public void onEnded() {
-                playNext();
-            }
-        });
-        artWrapper.addView(ytPlayerView, new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
         fullCover = new ImageView(this);
         fullCover.setScaleType(ImageView.ScaleType.CENTER_CROP);
@@ -1310,7 +1316,7 @@ private int playbackRequestId = 0;
             @Override
             public void onStopTrackingTouch(SeekBar sb) {
                 isSeeking = false;
-                if (ytPlayerView != null) ytPlayerView.seekToMs(sb.getProgress());
+                if (mediaController != null) mediaController.seekTo(sb.getProgress());
             }
         });
         sheet.addView(seekBar, new LinearLayout.LayoutParams(
@@ -1408,15 +1414,93 @@ private int playbackRequestId = 0;
             public void onLoadCleared(@Nullable Drawable placeholder) {}
         });
 
-        if (ytPlayerView != null) {
-            ytPlayerView.loadVideo(song.videoId);
+        resolveAndPlay(song);
+    }
+
+    private void connectPlaybackService() {
+        SessionToken token = new SessionToken(
+                this, new ComponentName(this, PlaybackService.class));
+        controllerFuture = new MediaController.Builder(this, token).buildAsync();
+        controllerFuture.addListener(() -> {
+            try {
+                mediaController = controllerFuture.get();
+                mediaController.addListener(playbackListener);
+                if (pendingSong != null) {
+                    YouTubeMusicClient.Song song = pendingSong;
+                    pendingSong = null;
+                    resolveAndPlay(song);
+                }
+            } catch (Exception e) {
+                Toast.makeText(this, "Tidak dapat menghubungkan pemutar audio: "
+                        + e.getMessage(), Toast.LENGTH_LONG).show();
+            }
+        }, command -> uiHandler.post(command));
+    }
+
+    private void resolveAndPlay(YouTubeMusicClient.Song song) {
+        if (song == null) return;
+        pendingSong = song;
+        int requestId = ++playbackRequestId;
+
+        if (mediaController == null) {
+            return; // Akan diproses setelah MediaController tersambung.
         }
+        pendingSong = null;
+
+        Toast.makeText(this, "Menyiapkan audio...", Toast.LENGTH_SHORT).show();
+        executor.execute(() -> {
+            YouTubeMusicClient.StreamResult stream =
+                    YouTubeMusicClient.getAudioStream(song.videoId);
+
+            uiHandler.post(() -> {
+                if (requestId != playbackRequestId) return; // Abaikan hasil lagu lama.
+                if (stream == null || stream.url == null || stream.url.trim().isEmpty()) {
+                    String reason = stream == null ? "Stream tidak ditemukan" : stream.errorDetail;
+                    Toast.makeText(this, "Audio tidak tersedia: " + reason,
+                            Toast.LENGTH_LONG).show();
+                    return;
+                }
+
+                if (mediaController == null) {
+                    pendingSong = song;
+                    return;
+                }
+
+                PlaybackService.setStreamUserAgent(stream.userAgent);
+                MediaMetadata metadata = new MediaMetadata.Builder()
+                        .setTitle(song.title == null ? "Unknown title" : song.title)
+                        .setArtist(song.subtitle == null ? "YouTube Music" : song.subtitle)
+                        .setArtworkUri(song.thumbnail == null || song.thumbnail.isEmpty()
+                                ? null : Uri.parse(song.thumbnail))
+                        .build();
+
+                MediaItem item = new MediaItem.Builder()
+                        .setMediaId(song.videoId)
+                        .setUri(stream.url)
+                        .setMediaMetadata(metadata)
+                        .build();
+
+                mediaController.setMediaItem(item);
+                mediaController.prepare();
+                mediaController.play();
+                isPlayingState = true;
+                updatePlaybackButtons(true);
+            });
+        });
+    }
+
+    private void updatePlaybackButtons(boolean playing) {
+        int iconRes = playing ? R.drawable.ic_pause : R.drawable.ic_play;
+        if (miniPlayBtn != null) miniPlayBtn.setImageResource(iconRes);
+        if (compactPlayBtn != null) compactPlayBtn.setImageResource(iconRes);
+        if (fullPlayBtn != null) fullPlayBtn.setImageResource(iconRes);
+        if (fullCover != null) fullCover.setVisibility(View.VISIBLE);
     }
 
     private void togglePlayPause() {
-        if (ytPlayerView == null) return;
-        if (isPlayingState) ytPlayerView.pauseVideo();
-        else ytPlayerView.playVideo();
+        if (mediaController == null) return;
+        if (mediaController.isPlaying()) mediaController.pause();
+        else mediaController.play();
     }
 
     private void playNext() {
@@ -1532,9 +1616,16 @@ private int playbackRequestId = 0;
 
     @Override
     protected void onDestroy() {
-        if (ytPlayerView != null) {
-            ytPlayerView.destroy();
+        uiHandler.removeCallbacks(progressRunnable);
+        if (mediaController != null) {
+            mediaController.removeListener(playbackListener);
+            mediaController = null;
         }
+        if (controllerFuture != null) {
+            MediaController.releaseFuture(controllerFuture);
+            controllerFuture = null;
+        }
+        executor.shutdownNow();
         super.onDestroy();
     }
 
